@@ -53,6 +53,14 @@ export default defineConfig({
     // 改用段外的 1660
     port: 1660,
     strictPort: true,
+    // 个人 worktree 复用主仓库的 node_modules；KaTeX 字体位于父目录，
+    // 必须显式允许，否则开发版会拒绝加载公式字体。
+    fs: {
+      allow: [
+        path.resolve(__dirname, '.'),
+        path.resolve(__dirname, '../../node_modules'),
+      ],
+    },
     // 忽略 src-tauri 与 target，避免 Vite 监听 cargo 写入中的文件导致 EBUSY 崩溃
     watch: {
       ignored: ['**/src-tauri/**', '**/target/**'],
