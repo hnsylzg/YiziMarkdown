@@ -8,7 +8,7 @@
  *   - 字号行距是否跟随预览（关闭则用 Word 规范版式：A4 / 11pt / 1.5 倍行距）
  *   - 字体是否跟随预览（关闭则用 Word 经典默认字体：正文 Calibri / 等线，标题 Calibri Light / 等线 Light）
  *
- * 内置导出的版式开关每次回到默认；Pandoc 模板路径单独持久化，下次打开自动恢复。
+ * 导出引擎、版式开关与 Pandoc 模板路径都会持久化，下次打开自动恢复。
  */
 import { useEffect, useState } from 'react'
 import { FileDown, FolderOpen, Trash2, X } from 'lucide-react'
@@ -38,24 +38,20 @@ interface Props {
 export default function DocxExportDialog({ open, onClose, onExport }: Props) {
   const { t } = useI18n()
   const savedTemplatePath = useSettingsStore((s) => s.docxPandocTemplatePath)
+  const engine = useSettingsStore((s) => s.docxExportEngine)
+  const themeColors = useSettingsStore((s) => s.docxThemeColors)
+  const followPreview = useSettingsStore((s) => s.docxFollowPreview)
+  const followPreviewFont = useSettingsStore((s) => s.docxFollowPreviewFont)
   const setField = useSettingsStore((s) => s.setField)
-  const [themeColors, setThemeColors] = useState(true)
-  const [followPreview, setFollowPreview] = useState(true)
-  const [followPreviewFont, setFollowPreviewFont] = useState(true)
-  const [engine, setEngine] = useState<'native' | 'pandoc'>('native')
   const [templatePath, setTemplatePath] = useState<string | null>(null)
   const [templateError, setTemplateError] = useState<string | null>(null)
   const [pickingTemplate, setPickingTemplate] = useState(false)
 
   useEffect(() => {
     if (!open) {
-      setEngine('native')
       setTemplatePath(null)
       setTemplateError(null)
       setPickingTemplate(false)
-      setThemeColors(true)
-      setFollowPreview(true)
-      setFollowPreviewFont(true)
     }
   }, [open])
 
@@ -157,7 +153,7 @@ export default function DocxExportDialog({ open, onClose, onExport }: Props) {
                   type="button"
                   role="radio"
                   aria-checked={engine === item.id}
-                  onClick={() => setEngine(item.id)}
+                  onClick={() => setField('docxExportEngine', item.id)}
                   className="text-left p-2.5 rounded border transition-colors hover:bg-[var(--editor-hover)]"
                   style={{
                     borderColor: engine === item.id ? 'var(--editor-accent)' : 'var(--editor-border)',
@@ -179,7 +175,7 @@ export default function DocxExportDialog({ open, onClose, onExport }: Props) {
                 <input
                   type="checkbox"
                   checked={themeColors}
-                  onChange={(e) => setThemeColors(e.target.checked)}
+                  onChange={(e) => setField('docxThemeColors', e.target.checked)}
                   className="mt-0.5"
                 />
                 <span>
@@ -194,7 +190,7 @@ export default function DocxExportDialog({ open, onClose, onExport }: Props) {
                 <input
                   type="checkbox"
                   checked={followPreview}
-                  onChange={(e) => setFollowPreview(e.target.checked)}
+                  onChange={(e) => setField('docxFollowPreview', e.target.checked)}
                   className="mt-0.5"
                 />
                 <span>
@@ -209,7 +205,7 @@ export default function DocxExportDialog({ open, onClose, onExport }: Props) {
                 <input
                   type="checkbox"
                   checked={followPreviewFont}
-                  onChange={(e) => setFollowPreviewFont(e.target.checked)}
+                  onChange={(e) => setField('docxFollowPreviewFont', e.target.checked)}
                   className="mt-0.5"
                 />
                 <span>
