@@ -2,7 +2,7 @@
 
 ## v0.4.4
 
-> **开发中**：0.4.3 发布后的修复，随下一版本发布。
+> **开发中**：0.4.3 发布后的修复与新功能，随下一版本发布。用户向说明见 `docs/changelog/CHANGELOG-V0.4.4.md`。
 
 ### 欢迎文档升级后自动刷新（2026-11-09）
 
@@ -29,6 +29,154 @@
 - 新增三态判定 `decideUpdate()`：`latest`（清单 ≤ 当前）/ `skipped`（新版本但已跳过同版本）/ `available`（应提示）。
 - 手动通道与自动通道统一使用该判定；`latest` 时清空 update，界面显示「已是最新版本」。
 - 新增 3 个单测覆盖相同版本、旧清单、预发布、脏版本号与跳过记录。
+
+### 左侧边栏可拖拽调宽（2026-11-12）
+
+**需求**
+- 左侧文件 / 大纲 / 云端侧栏固定 260px，无法调整；改为与右侧 AI 助手面板相同的拖拽方式。
+
+**实现**
+- `Sidebar` 右边缘新增拖拽手柄（与 AI 面板左边缘手柄同款：窄命中区、hover / 拖动显示主题强调色、`cursor-col-resize`）。
+- 新增 `sidebarWidth` 设置（默认 260，与改动前一致）；存档版本升到 v22，旧存档补默认值并收敛越界值。
+- 边界与 AI 面板一致：最小 260px（取改动前固定宽度，再窄会挤压顶部标签），上限 `min(600px, 窗口宽度 40%)`；窗口变窄时读取与拖动都按当前窗口重新收窄。
+- 拖动过程只更新本地 state，松手才写回设置存档 —— 避免每帧重渲染整棵文件树、也避免拖动过程频繁写 localStorage；拖动期间临时关掉 CSS `width` 过渡，保证跟手。
+
+**验证**
+- 新增 `tests/sidebarWidth.test.ts`（6 条边界用例）；`npx tsc --noEmit` 通过，`npm test` 494 项通过。
+
+### Windows 安装版「程序运行位置」带 `\\?\` 前缀（2026-11-12）
+
+**现象**
+- Windows 安装版在「设置 → 配置目录」里，程序运行位置显示为 `\\?\D:\Program Files\YiziMarkdown`。
+
+**根因**
+- Tauri 的 `resource_dir()` 内部会对 exe 路径做 `canonicalize()`；Windows 上 Rust 的 `canonicalize` 返回逐字路径（verbatim path，带 `\\?\` 前缀）。文件读写不受影响，但该路径被原样输出到前端展示。
+
+**修复**
+- setup 记录资源目录时统一去掉 `\\?\` 前缀：驱动器路径还原为 `D:\...`，UNC 路径 `\\?\UNC\server\share` 还原为 `\\server\share`；`get_app_root()` 的回落分支同样处理。
+- 只改展示用的路径字符串，不改变目录指向；非 Windows 路径不命中前缀，行为不变。
+- 新增 2 个单元测试覆盖驱动器路径、UNC 路径与普通路径。
+
+**验证**
+- `cargo test strips_windows_verbatim_prefix_for_display` 与 `normalize_app_path_keeps_platform_behavior` 通过；dev 客户端已自动重编译并重启。
+
+### 拖动 AI 面板宽度时滚动条不跟随（2026-11-12）
+
+**现象**
+- 源码 / 实时模式下，拖动右侧 AI 助手面板的宽度，编辑器右侧的自绘滚动条停在旧位置，表现为一根孤立的细条；直到发生滚动才跳回正确位置。并排 / 预览模式不受影响。
+
+**根因**
+- 自绘滚动条只监听滚动、窗口 resize 与 `.cm-content` 的尺寸变化，没有观察滚动容器 `.cm-scroller` 自身的宽度变化。
+- 拖动 AI 面板时变的是 `.cm-scroller` 的宽度；正文列受 `max-width` 限制，拖动过程中 `.cm-content` 宽度常常不变，因此不触发重测。
+
+**修复**
+- `ResizeObserver` 改为同时观察 `.cm-scroller` 本身与 `.cm-content`，容器尺寸一变就重算滚动条的 `left / top / height`。
+- 滚动条是 `position: fixed` 的独立细条，重测不会反过来影响容器尺寸，不会形成 ResizeObserver 循环。
+
+**验证**
+- dev 实测：按住 AI 面板边框拖动时，滚动条实时跟随新的面板边缘；松开后仍保持正确位置。
+- `npx tsc --noEmit` 通过。
+
+### Linux 安装包被任务栏显示成「YiziMarkdown (Dev)」（2026-11-13）
+
+**现象**
+- 用 deb 安装正式版后，任务栏 / 进程列表里的应用名仍带开发态的 Dev 标记。
+
+**根因**
+- `npm run dev:icon` 写入的用户级 `yizimarkdown-dev.desktop` 声明了 `StartupWMClass=yizimarkdown`，与安装包自带的 `YiziMarkdown.desktop` **完全相同**。
+- GNOME 等桌面按 WM_CLASS 匹配 `.desktop` 时，用户目录优先于系统目录，于是正式安装版窗口被匹配到开发条目，显示它声明的名称「YiziMarkdown (Dev)」。
+- 开发构建与安装包的 WM_CLASS 一直相同（都来自二进制名 `yizimarkdown`），桌面环境无法区分两者。
+
+**修复**
+- 开发构建在 `main()` 里、GTK 初始化之前调用 `glib::set_prgname("yizimarkdown-dev")`，把 WM_CLASS 的 instance 改成 `yizimarkdown-dev`；正式构建（`--release`）保持 `yizimarkdown`。
+- `scripts/linux-dev-icon.mjs` 的 `StartupWMClass` 同步改为 `yizimarkdown-dev` —— 开发态窗口只匹配开发条目，正式安装版只匹配系统条目。
+- `Cargo.toml` 新增 Linux 目标依赖 `glib`（tao/gtk 已传递引入同一版本，无新增下载）。
+
+**验证**
+- 开发窗口实测 `WM_CLASS = "yizimarkdown-dev", "Yizimarkdown-dev"`（`xprop`）；正式构建仍为 `yizimarkdown`。
+- `cargo check --no-default-features` 通过；已重写本机 `yizimarkdown-dev.desktop`。
+
+### Linux 无法关联 md / epub，双击却打开 dev 版（2026-11-13）
+
+**现象**
+- Linux 下设置面板里点击「设为默认 Markdown 编辑器 / EPUB 阅读器」没有反应，复选框不变化。
+- 但双击 `.md` / `.epub` 又能打开文件 —— 打开的是开发态的 dev 版本。
+
+**根因（三个原因叠加）**
+1. **Linux 后端根本没实现文件关联**：`associate_md_files` / `associate_epub_files` 在 Linux 分支直接返回 Err（原文「only supported on Windows and macOS」）；`is_md_associated` / `is_epub_associated` 恒返回 `false`。
+2. **前端把错误静默吞掉**：`invokeTauri` 内部 catch 后返回 `null`，设置面板只在成功时改复选框，所以点击表现为「无效、没有变化」，也没有任何提示。
+3. **默认处理器是开发态条目**：安装包的 `YiziMarkdown.desktop` 只声明 `MimeType`（我能打开），默认用谁由 `mimeapps.list` 决定，deb 安装不会改默认；而 `npm run dev:icon` 写入的 `yizimarkdown-dev.desktop` 也声明了 `MimeType`，本机 `~/.config/mimeapps.list` 的默认处理器正是它 —— 于是双击启动 `target/debug/yizimarkdown`，看起来「能打开，但是 dev 版」。
+
+**修复**
+- 新增 `src/linux_file_assoc.rs`：用 `xdg-mime` 写入默认处理器；查询状态只认 `mimeapps.list` 里的**显式**默认，不看 `xdg-mime query default` 的启发式回落（否则取消关联后会被 `mimeinfo.cache` 再次选回，复选框关不掉）；取消关联时从用户级 `mimeapps.list` / `<桌面>-mimeapps.list` 中移除本应用。
+- desktop 文件 ID 区分场景：debug → `yizimarkdown-dev.desktop`，release → `YiziMarkdown.desktop`；AppImage / 手动集成按 `StartupWMClass` / `Exec` 自动识别。
+- `scripts/linux-dev-icon.mjs` 去掉 `MimeType`：图标条目不再注册为文件处理器，从源头避免抢占默认关联。
+- 设置面板改用 `invokeTauriOrThrow`，失败时在面板内显示错误；操作完成后重新查询实际状态，而不是假定成功。
+
+**验证**
+- dev 实测：Markdown / EPUB 的勾选与取消均生效，`mimeapps.list` 与复选框状态同步；无桌面条目时会在面板内显示错误原因。
+- Rust 新增 5 个单元测试（默认列表解析、关联移除、段落保留）；`cargo test` 187 通过。`tsc` / `npm test` 494 通过。
+
+### 阅读模式五类提示块样式丢失（2026-11-13）
+
+**现象**
+- `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` 在预览、实时、演示模式下渲染正常；进入阅读模式后只剩普通引用块 —— 没有类型图标，标题也不着色。
+
+**根因**
+- `alert.ts` 产出的 HTML 是正确的（`blockquote.md-alert.md-alert-<type>` + `p.md-alert-title`），问题只在样式命中范围。
+- 提示块相关的选择器此前只覆盖 `.editor-content`（源码 / 预览）和 `.ys-slide`（演示）。阅读模式的正文容器是 `.reader-content`，所有规则都没匹配上，标题退化成普通段落。
+
+**修复**
+- 标题排版（flex + 图标 `::before`）与五类 `--alert-accent` / `--alert-icon` 变量的选择器全部增加 `.reader-content`；深色主题的配色覆盖同步增加。
+- 阅读模式的引用块默认是斜体，给提示块标题补 `font-style: normal`，标题保持直立，正文仍沿用阅读模式的引用排版。
+- 引用块本身的边框 / 底色仍由阅读模式自己的引用样式决定，与预览 / 演示的既有口径一致（只给标题与图标着色）。
+
+**验证**
+- 构造包含五类提示块 + 普通引用对照的文档，在阅读模式第 3 页确认：图标、标题文字、五种配色全部正确，普通引用块不受影响。
+
+### 导出弹窗不记住上次勾选（2026-11-13）
+
+**现象**
+- DOCX / EPUB 导出弹窗每次打开都回到默认勾选：上次取消的「导出主题色」「生成封面页」等，下次又变回勾选，需要重新设置。PPTX 弹窗的备注 / 页脚没有这个问题。
+
+**根因**
+- DOCX 弹窗的三个勾选项是组件内 `useState`，文件头注释也明确写着「选项不落盘」。
+- EPUB 走通用 `PluginExportDialog`：打开时只应用插件的 `getExportDefaults()`，从不读取任何存档；`pluginConfigs` 是 Markdown 渲染插件配置，不能复用为导出选项。
+- PPTX 的备注 / 页脚 / 超页策略早在 v0.4.0 就写进 settingsStore，因此一直能记住。
+
+**修复**
+- settingsStore 升到 v23：新增 `docxThemeColors` / `docxFollowPreview` / `docxFollowPreviewFont`，以及按 `${pluginId}:${format}` 分组的 `pluginExportOptions`；旧存档迁移补默认值。
+- DOCX 弹窗直接读写设置项，勾选立即落盘（取消导出也保留选择）。
+- `PluginExportDialog` 初始化顺序改为「上次记住的值 → getExportDefaults → 字段默认值」。
+- 只记住偏好型字段（checkbox / select）；书名、作者等 text 字段仍然跟随当前文档，避免把上一本书的标题带到下一篇。
+- 新增 `lib/exportOptions.ts`：读取存档时校验类型与选项合法性（插件升级删掉旧选项后自动回落默认，不会出现空白下拉），并配 5 条单测。
+
+**验证**
+- DOCX：取消「字体跟随预览」→ 关闭重开保持未勾选；重新勾选后保持勾选。
+- EPUB：取消「生成封面页」、阅读主题改为「深色阅读」→ 关闭重开均保持；「书名」仍自动取当前文档标题。
+- `tsc` 通过；`npm test` 499 项通过。
+
+### 任务列表回车续写退化成普通无序列表（2026-11-13）
+
+**现象**
+- 在 `- [ ] 文本` 的任务项末尾按回车，新行只生成 `- `，不会继续生成 `- [ ] `。
+
+**根因**
+- Enter 由 CodeMirror 的 `markdownKeymap`（`insertNewlineContinueMarkup`）处理；不同版本 / 文档状态下它可能只续写列表标记，不补任务 checkbox。
+- 续行还包含缩进、有序列表重编号、非紧凑列表空行等逻辑，不能简单手写 `\n- [ ] ` 替代。
+
+**修复**
+- 新增最高优先级的 Enter 命令（`Prec.highest`）：先让 CodeMirror 生成标准续行事务，再用 `completeTaskContinuation()` 检查新行 ——
+  - 新行已带 `- [ ]` → 原样采用，避免 `- [ ] [ ] `；
+  - 新行只有 `- ` → 在列表标记后补 `[ ] `；
+  - 两种情况都合成**同一个**事务，撤销一次即可回退，光标停在 checkbox 之后。
+- 空任务项（`- [ ] `）仍交给 CodeMirror 处理（退出列表 / 删标记）。
+- 缩进、`1. [ ]` 编号、嵌套层级全部由 CodeMirror 续行逻辑保留。
+- 新增 `lib/taskListEnter.ts` 与 `taskEnterAction()` 判定，配套 9 条单测。
+
+**验证**
+- dev 实测：ASCII 任务项 `- [ ] foo` 末尾回车，新行生成 `- [ ] `，光标位于第 7 列。
+- 有序任务、嵌套任务、CM 已补 checkbox 不重复插入均通过单测覆盖。
 
 ## v0.4.3
 

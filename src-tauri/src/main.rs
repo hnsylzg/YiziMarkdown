@@ -488,6 +488,30 @@ fn register_md_file_icon() {
 /// dev 下 `resource_dir()` 就是 cargo 输出目录（Tauri 自己识别 `target/`），行为与改动前一致。
 static RESOURCE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// 去掉 Windows 逐字路径（verbatim path）的 `\\?\` 前缀。
+///
+/// Tauri 的 `resource_dir()` 内部会对 exe 路径做 `canonicalize()`，Windows 上 Rust 的
+/// `canonicalize` 返回逐字路径 `\\?\D:\Program Files\YiziMarkdown`。文件读写完全正常，
+/// 但会原样显示在「设置 → 配置目录 → 程序运行位置」，看起来像一串乱码。
+/// 这里统一还原成普通路径；UNC 形式 `\\?\UNC\server\share` 还原成 `\\server\share`。
+/// 非 Windows 路径不会命中任何前缀，原样返回。
+fn strip_windows_verbatim_prefix(text: &str) -> Option<String> {
+    // `\\?\UNC\` 必须排在 `\\?\` 前面判断，否则会把 "UNC\" 当成路径的一部分
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        Some(format!("\\\\{}", rest))
+    } else {
+        text.strip_prefix("\\\\?\\").map(|rest| rest.to_string())
+    }
+}
+
+/// 把资源目录还原成用户可读的普通路径（只影响展示与日志，不改变指向）。
+fn normalize_app_path(path: PathBuf) -> PathBuf {
+    match strip_windows_verbatim_prefix(&path.to_string_lossy()) {
+        Some(clean) => PathBuf::from(clean),
+        None => path,
+    }
+}
+
 /// 获取应用根目录（资源所在目录）。
 ///
 /// 打包版 = Tauri 解析出的资源目录；dev / 未初始化时回落 exe 同级（macOS bundle 下为
@@ -515,7 +539,9 @@ fn get_app_root() -> Result<PathBuf, String> {
         }
     }
 
-    Ok(exe.parent().unwrap_or(Path::new(".")).to_path_buf())
+    Ok(normalize_app_path(
+        exe.parent().unwrap_or(Path::new(".")).to_path_buf(),
+    ))
 }
 
 /// 获取用户文档中的配置目录：`<用户文档>/yizimarkdown/`（含 skills / templates / themes / assets）
@@ -1481,6 +1507,10 @@ fn write_keybindings(content: String) -> Result<(), String> {
 
 // ===== 文件关联 (.md) =====
 
+/// Linux: 通过 xdg-mime 设置 / 取消默认处理器（见模块头注释）
+#[cfg(target_os = "linux")]
+mod linux_file_assoc;
+
 /// macOS: 通过 LaunchServices 设置/取消 .md 默认处理器
 #[cfg(target_os = "macos")]
 mod macos_file_assoc {
@@ -1678,9 +1708,15 @@ fn associate_md_files() -> Result<bool, String> {
         return macos_file_assoc::set_default(true);
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     {
-        return Err("File association is only supported on Windows and macOS".to_string());
+        linux_file_assoc::set_default(true, linux_file_assoc::MD_MIMES)?;
+        return Ok(true);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        return Err("File association is only supported on Windows, macOS and Linux".to_string());
     }
 }
 
@@ -1708,9 +1744,15 @@ fn disassociate_md_files() -> Result<bool, String> {
         return macos_file_assoc::set_default(false);
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     {
-        return Err("File association is only supported on Windows and macOS".to_string());
+        linux_file_assoc::set_default(false, linux_file_assoc::MD_MIMES)?;
+        return Ok(true);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        return Err("File association is only supported on Windows, macOS and Linux".to_string());
     }
 }
 
@@ -1739,7 +1781,12 @@ fn is_md_associated() -> Result<bool, String> {
         return macos_file_assoc::is_default();
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        return Ok(linux_file_assoc::is_default(linux_file_assoc::MD_MIMES));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         return Ok(false);
     }
@@ -1799,9 +1846,15 @@ fn associate_epub_files() -> Result<bool, String> {
         return macos_file_assoc::set_epub_default(true);
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     {
-        return Err("File association is only supported on Windows and macOS".to_string());
+        linux_file_assoc::set_default(true, linux_file_assoc::EPUB_MIMES)?;
+        return Ok(true);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        return Err("File association is only supported on Windows, macOS and Linux".to_string());
     }
 }
 
@@ -1842,9 +1895,15 @@ fn disassociate_epub_files() -> Result<bool, String> {
         return macos_file_assoc::set_epub_default(false);
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     {
-        return Err("File association is only supported on Windows and macOS".to_string());
+        linux_file_assoc::set_default(false, linux_file_assoc::EPUB_MIMES)?;
+        return Ok(true);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        return Err("File association is only supported on Windows, macOS and Linux".to_string());
     }
 }
 
@@ -1870,7 +1929,12 @@ fn is_epub_associated() -> Result<bool, String> {
         return macos_file_assoc::is_epub_default();
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        return Ok(linux_file_assoc::is_default(linux_file_assoc::EPUB_MIMES));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         return Ok(false);
     }
@@ -2287,6 +2351,18 @@ async fn export_pdf(app: tauri::AppHandle, html: String, path: String) -> Result
 }
 
 fn main() {
+    // Linux 开发态与正式安装包必须能被桌面环境区分开：
+    //   · 安装包自带的 YiziMarkdown.desktop 声明 StartupWMClass=yizimarkdown；
+    //   · npm run dev:icon 写的 yizimarkdown-dev.desktop 也是同一个类，
+    //     于是装完 deb 后窗口会被优先匹配到开发态条目，任务栏 / 进程列表显示
+    //     「YiziMarkdown (Dev)」。
+    // 这里在 GTK 初始化前把 GLib 程序名改成 yizimarkdown-dev（WM_CLASS 的 instance 部分），
+    // 开发态于是只匹配 dev 条目；正式构建（--release）保持 yizimarkdown 不变。
+    #[cfg(target_os = "linux")]
+    if cfg!(debug_assertions) {
+        glib::set_prgname(Some("yizimarkdown-dev"));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -2422,7 +2498,7 @@ fn main() {
             // deb → /usr/lib/YiziMarkdown；AppImage → AppDir/usr/lib/YiziMarkdown；
             // dev → cargo 输出目录（与改动前一致）。详见 get_app_root()。
             if let Ok(dir) = app.path().resource_dir() {
-                let _ = RESOURCE_DIR.set(dir);
+                let _ = RESOURCE_DIR.set(normalize_app_path(dir));
             }
 
             // 启动时确保目录结构完整（写到用户目录，不再是安装目录）
@@ -2860,5 +2936,33 @@ mod tests {
         for url in &cfg.endpoints {
             assert_eq!(url.scheme(), "https", "endpoints 必须是 https：{url}");
         }
+    }
+
+    #[test]
+    fn strips_windows_verbatim_prefix_for_display() {
+        // 安装版最常见的形态：Tauri canonicalize 后的驱动器路径 → 普通路径
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"\\?\D:\Program Files\YiziMarkdown").as_deref(),
+            Some(r"D:\Program Files\YiziMarkdown")
+        );
+        // UNC 网络路径：\\?\UNC\ → \\
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"\\?\UNC\server\share\YiziMarkdown").as_deref(),
+            Some(r"\\server\share\YiziMarkdown")
+        );
+        // 普通路径不命中，原样返回（由调用方回落到原 PathBuf）
+        assert_eq!(strip_windows_verbatim_prefix(r"D:\Program Files\YiziMarkdown"), None);
+        assert_eq!(strip_windows_verbatim_prefix("/usr/lib/YiziMarkdown"), None);
+        assert_eq!(strip_windows_verbatim_prefix(r"\\server\share"), None);
+    }
+
+    #[test]
+    fn normalize_app_path_keeps_platform_behavior() {
+        assert_eq!(
+            normalize_app_path(PathBuf::from(r"\\?\D:\Program Files\YiziMarkdown")),
+            PathBuf::from(r"D:\Program Files\YiziMarkdown")
+        );
+        let plain = PathBuf::from("/usr/lib/YiziMarkdown");
+        assert_eq!(normalize_app_path(plain.clone()), plain);
     }
 }

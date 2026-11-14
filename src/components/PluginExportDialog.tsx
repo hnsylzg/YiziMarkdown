@@ -11,6 +11,7 @@ import ExportResultActions from './ExportResultActions'
 import { useI18n } from '../i18n'
 import { getPluginById, exportWithPlugin } from '../plugins/registry'
 import { invokeTauri, invokeTauriOrThrow } from '../lib/tauri'
+import { exportOptionsStoreKey, isRememberedExportField, rememberedExportValue } from '../lib/exportOptions'
 import { useSettingsStore } from '../stores/settingsStore'
 import type { PluginConfigField, PluginExportContext, PluginExportWarning } from '../plugins/types'
 
@@ -74,7 +75,7 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
   const { t } = useI18n()
   const plugin = useMemo(() => getPluginById(pluginId), [pluginId])
   const fields = plugin?.exportOptions || []
-  const setField = useSettingsStore((s) => s.setField)
+  const exportKey = exportOptionsStoreKey(pluginId, format)
   const [values, setValues] = useState<Record<string, Value>>({})
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<{ pct: number; text: string } | null>(null)
@@ -101,7 +102,9 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
     options: {},
   }), [source])
 
-  // 打开面板 / 切换插件时重置并套默认值
+  // 打开面板 / 切换插件时重置并套默认值。
+  // 勾选 / 下拉这类偏好项优先用上次记住的值（见 lib/exportOptions.ts），
+  // 书名 / 作者等文本始终跟随当前文档，不跨文档记忆。
   useEffect(() => {
     if (!open) return
     setBusy(false)
@@ -111,15 +114,14 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
     setResult(null)
     abortRef.current = false
     const defaults = plugin?.getExportDefaults?.(baseContext) || {}
-    const optionKey = `${pluginId}:${format}`
-    const saved = useSettingsStore.getState().exportOptionValues[optionKey] || {}
+    const saved = useSettingsStore.getState().pluginExportOptions[exportKey] || {}
     const next: Record<string, Value> = {}
     for (const field of fields) {
-      const raw = field.persist && field.key in saved ? saved[field.key] : defaults[field.key]
-      next[field.key] = fieldValue(field, raw)
+      const remembered = rememberedExportValue(field, saved[field.key])
+      next[field.key] = fieldValue(field, remembered ?? defaults[field.key])
     }
     setValues(next)
-  }, [open, pluginId, format, plugin]) // 打开时只初始化一次；source 变化不重置用户选项
+  }, [open, pluginId, exportKey, plugin]) // 打开时只初始化一次；source 变化不重置用户选项
 
   const startExport = useCallback(async () => {
     if (busy || !plugin) return
@@ -172,14 +174,16 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
 
   if (!open || !plugin) return null
 
-  const setValue = (field: PluginConfigField, value: Value) => {
-    setValues((prev) => ({ ...prev, [field.key]: value }))
-    if (!field.persist) return
-    const optionKey = `${pluginId}:${format}`
-    const all = useSettingsStore.getState().exportOptionValues
-    setField('exportOptionValues', {
-      ...all,
-      [optionKey]: { ...(all[optionKey] || {}), [field.key]: value },
+  const setValue = (key: string, value: Value) => {
+    setValues((prev) => ({ ...prev, [key]: value }))
+    const field = fields.find((f) => f.key === key)
+    if (!field || !isRememberedExportField(field)) return
+    // 勾选 / 下拉立即落盘：取消导出也不会丢；下次打开直接沿用
+    const store = useSettingsStore.getState()
+    const previous = store.pluginExportOptions[exportKey] || {}
+    store.setField('pluginExportOptions', {
+      ...store.pluginExportOptions,
+      [exportKey]: { ...previous, [key]: value },
     })
   }
   const fieldLabel = (f: PluginConfigField) => f.labelKey ? t(f.labelKey) : f.label
@@ -235,7 +239,7 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
                   <select
                     className="settings-select"
                     value={String(values[field.key] ?? field.defaultValue)}
-                    onChange={(e) => setValue(field, e.target.value)}
+                    onChange={(e) => setValue(field.key, e.target.value)}
                     disabled={busy}
                   >
                     {field.options?.map((opt) => (
@@ -248,7 +252,7 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
                     type="checkbox"
                     className="settings-checkbox"
                     checked={Boolean(values[field.key])}
-                    onChange={(e) => setValue(field, e.target.checked)}
+                    onChange={(e) => setValue(field.key, e.target.checked)}
                     disabled={busy}
                   />
                 )}
@@ -260,7 +264,7 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
                     max={field.max}
                     step={field.step}
                     value={Number(values[field.key] ?? field.defaultValue)}
-                    onChange={(e) => setValue(field, Number(e.target.value))}
+                    onChange={(e) => setValue(field.key, Number(e.target.value))}
                     disabled={busy}
                   />
                 )}
@@ -269,7 +273,7 @@ export default function PluginExportDialog({ open, pluginId, format, source, def
                     type="text"
                     className="settings-input w-56"
                     value={String(values[field.key] ?? field.defaultValue)}
-                    onChange={(e) => setValue(field, e.target.value)}
+                    onChange={(e) => setValue(field.key, e.target.value)}
                     disabled={busy}
                   />
                 )}

@@ -19,6 +19,20 @@ export const CONTENT_WIDTH_MIN = 400
 export const CONTENT_WIDTH_MAX = 1600
 export const CONTENT_WIDTH_DEFAULT = 900
 
+/** 左侧文件/大纲侧栏宽度（px）的取值区间与默认值。
+ *  最小宽度与默认值都取改动前固定的 260px —— 再窄会把顶部「文件/大纲/云端」标签挤变形。
+ *  上限与 AI 面板同一策略：不超过 600px，且不超过窗口宽度的 40%（见下方 clampSidebarWidth）。 */
+export const SIDEBAR_WIDTH_MIN = 260
+export const SIDEBAR_WIDTH_MAX = 600
+export const SIDEBAR_WIDTH_DEFAULT = 260
+
+/** 按窗口宽度收窄侧栏宽度：拖动时与读取存档时共用，避免把手柄拖到屏幕外。 */
+export function clampSidebarWidth(width: number, viewportWidth: number): number {
+  const max = Math.min(SIDEBAR_WIDTH_MAX, viewportWidth * 0.4)
+  if (!Number.isFinite(width)) return SIDEBAR_WIDTH_DEFAULT
+  return Math.max(SIDEBAR_WIDTH_MIN, Math.min(max, width))
+}
+
 /** 界面字号倍率（只影响 UI 文字与图标）。
  *  用户看到的 100% = 当前实际观感（绝对倍率 1.1）；设置范围 80% ~ 120%，默认 100%。 */
 export const UI_TEXT_SCALE_BASE = 1.1
@@ -91,6 +105,10 @@ export interface SettingsState {
   // 插件
   enabledPlugins: string[]
   pluginConfigs: Record<string, Record<string, unknown>>
+
+  // 左侧边栏（文件 / 大纲 / 云端）
+  /** 侧栏宽度 px：拖动右边缘手柄改写，持久化；上限随窗口宽度收窄 */
+  sidebarWidth: number
 
   // AI（v0.2.0 侧边聊天面板）
   aiProvider: string
@@ -183,12 +201,16 @@ export interface SettingsState {
   /** Pandoc 使用的 Word reference.docx；空串 = 使用 Pandoc 默认样式 */
   docxPandocTemplatePath: string
   docxExportEngine: 'native' | 'pandoc'
+  /** 导出主题色（标题 / 表头 / 代码高亮） */
   docxThemeColors: boolean
+  /** 字号与行距跟随预览 */
   docxFollowPreview: boolean
+  /** 字体跟随预览 */
   docxFollowPreviewFont: boolean
 
-  /** 插件导出面板中显式标记为持久化的选项，键为 `pluginId:format`。 */
-  exportOptionValues: Record<string, Record<string, unknown>>
+  // 插件导出弹窗（EPUB 等）
+  /** 按 `${pluginId}:${format}` 记住的偏好项（只存 checkbox / select，见 lib/exportOptions.ts） */
+  pluginExportOptions: Record<string, Record<string, unknown>>
 
   // AI 面板运行时状态（不持久化）
   /** AI 面板是否打开 */
@@ -246,6 +268,9 @@ export const useSettingsStore = create<SettingsState>()(
       // 插件：EPUB 导出作为首个内置插件，默认启用；公式/Mermaid 已是核心能力
       enabledPlugins: ['epub'],
       pluginConfigs: {},
+
+      // 左侧边栏
+      sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
 
       // AI（v0.2.0 侧边聊天面板）
       aiProvider: 'deepseek',
@@ -309,8 +334,8 @@ export const useSettingsStore = create<SettingsState>()(
       docxFollowPreview: true,
       docxFollowPreviewFont: true,
 
-      // 插件导出面板的持久化选项
-      exportOptionValues: {},
+      // 插件导出弹窗：默认没有任何记住项
+      pluginExportOptions: {},
 
       // AI 面板运行时状态
       aiPanelOpen: false,
@@ -343,9 +368,12 @@ export const useSettingsStore = create<SettingsState>()(
       // v20: 粘贴图片保存位置 —— 新增 imageSaveMode（local 文档默认文档旁 images/）
       // v21: 取消「粘贴图片保存位置」设置 —— 本地文档统一写用户目录 assets/，
       //      存档里的 imageSaveMode 直接删除（不再有两条路径分支）
-      // v22: Pandoc Word 导出模板选择持久化 —— 新增 docxPandocTemplatePath
-      // v23: 导出面板选项持久化 —— Word 引擎/版式、PPTX 范围、插件结构化选项
-      version: 23,
+      // v22: 左侧边栏可拖拽调宽 —— 新增 sidebarWidth（默认 260，与改动前一致）
+      // v23: 导出弹窗记住勾选 —— 新增 docxThemeColors / docxFollowPreview /
+      //      docxFollowPreviewFont / pluginExportOptions（默认空）
+      // v24: 合并固定导出偏好 —— 新增 Word 引擎 / Pandoc 模板 / PPTX 范围；
+      //      将旧版 exportOptionValues 迁移到 pluginExportOptions
+      version: 24,
       migrate: (persisted: unknown, persistedVersion: number) => {
         // 自动迁移旧字体栈到 MiSans 方案
         const oldFont = "'DengXian', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif"
@@ -420,6 +448,34 @@ export const useSettingsStore = create<SettingsState>()(
           // v21：取消「粘贴图片保存位置」设置。本地文档统一写 ~/Documents/yizimarkdown/assets/，
           // 旧存档里的 imageSaveMode 已无消费点，直接删掉（留着只会被 persist 反复写回）。
           delete (state as Record<string, unknown>).imageSaveMode
+          // v22：左侧边栏宽度。存量存档没有它 ⇒ 补默认 260（与改动前一致）；
+          // 手改 localStorage 写入越界值统一收敛，避免手柄算出屏幕外的位置。
+          state.sidebarWidth = clampNumber(
+            state.sidebarWidth, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_DEFAULT
+          )
+          // v23/v24：统一导出偏好。Word 版式与 Pandoc 模板、PPTX 范围、
+          // 插件导出选项都做类型收敛；旧 custom 的 exportOptionValues 迁到新键。
+          if (typeof state.docxThemeColors !== 'boolean') state.docxThemeColors = true
+          if (typeof state.docxFollowPreview !== 'boolean') state.docxFollowPreview = true
+          if (typeof state.docxFollowPreviewFont !== 'boolean') state.docxFollowPreviewFont = true
+          if (state.docxExportEngine !== 'native' && state.docxExportEngine !== 'pandoc') {
+            state.docxExportEngine = 'native'
+          }
+          if (typeof state.docxPandocTemplatePath !== 'string') {
+            state.docxPandocTemplatePath = ''
+          }
+          if (
+            !state.pluginExportOptions ||
+            typeof state.pluginExportOptions !== 'object' ||
+            Array.isArray(state.pluginExportOptions)
+          ) {
+            const legacy = state.exportOptionValues
+            state.pluginExportOptions =
+              legacy && typeof legacy === 'object' && !Array.isArray(legacy)
+                ? legacy
+                : {}
+          }
+          delete (state as Record<string, unknown>).exportOptionValues
           // v14：PPTX 导出。存量存档没有这四个键 ⇒ 补默认值。
           // 超页策略只认枚举值（手改 localStorage 写入非法值会让分段按钮全灭）。
           if (typeof state.pptxExportHintSeen !== 'boolean') state.pptxExportHintSeen = false
@@ -428,30 +484,12 @@ export const useSettingsStore = create<SettingsState>()(
           if (state.pptxOverflowMode !== 'warn' && state.pptxOverflowMode !== 'shrink') {
             state.pptxOverflowMode = 'warn'
           }
-          // v22：Pandoc Word 模板路径。存量存档没有它 ⇒ 空串（Pandoc 默认样式）。
-          // 文件是否仍存在由导出弹窗打开时再校验，迁移阶段不做磁盘访问。
-          if (typeof state.docxPandocTemplatePath !== 'string') {
-            state.docxPandocTemplatePath = ''
-          }
-          // v23：导出面板选项。旧存档没有这些键 ⇒ 保持原有默认行为。
-          if (state.docxExportEngine !== 'native' && state.docxExportEngine !== 'pandoc') {
-            state.docxExportEngine = 'native'
-          }
-          if (typeof state.docxThemeColors !== 'boolean') state.docxThemeColors = true
-          if (typeof state.docxFollowPreview !== 'boolean') state.docxFollowPreview = true
-          if (typeof state.docxFollowPreviewFont !== 'boolean') state.docxFollowPreviewFont = true
+          // v24：PPTX 导出范围。
           if (state.pptxRangeMode !== 'all' && state.pptxRangeMode !== 'current' && state.pptxRangeMode !== 'custom') {
             state.pptxRangeMode = 'all'
           }
           state.pptxCustomStart = Math.round(clampNumber(state.pptxCustomStart, 1, 100000, 1))
           state.pptxCustomEnd = Math.round(clampNumber(state.pptxCustomEnd, 0, 100000, 0))
-          if (
-            !state.exportOptionValues
-            || typeof state.exportOptionValues !== 'object'
-            || Array.isArray(state.exportOptionValues)
-          ) {
-            state.exportOptionValues = {}
-          }
           // v15：数学公式 / Mermaid 不再是插件；清掉旧存档里的开关与配置。
           // 不影响未来真正的插件（如 epub）；只删除这两个已内置化的 id。
           const enabledPlugins = Array.isArray(state.enabledPlugins)
