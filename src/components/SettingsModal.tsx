@@ -1,7 +1,16 @@
 import { invokeTauri, invokeTauriOrThrow } from '../lib/tauri'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { X, Loader2, ChevronRight, FolderOpen, Palette, FileText, Keyboard, Settings2, Eye, EyeOff, Info, Github, History, BookOpen, ExternalLink, Zap, Globe, Puzzle, Bot, Cloud, Boxes, Download, RefreshCw, Presentation, Layers, Sparkles, Plus, HelpCircle } from 'lucide-react'
-import { useSettingsStore, UI_TEXT_SCALE_DEFAULT, UI_TEXT_SCALE_MIN, UI_TEXT_SCALE_MAX, DEFAULT_BRAND_NAME, BRAND_NAME_MAX } from '../stores/settingsStore'
+import {
+  useSettingsStore,
+  UI_TEXT_SCALE_DEFAULT,
+  UI_TEXT_SCALE_MIN,
+  UI_TEXT_SCALE_MAX,
+  DEFAULT_BRAND_NAME,
+  BRAND_NAME_MAX,
+  DEFAULT_EDITOR_FONT_SIZE,
+  DEFAULT_EDITOR_LINE_HEIGHT,
+} from '../stores/settingsStore'
 import { useUpdateStore } from '../stores/updateStore'
 import type { UpdateBlocker } from '../lib/updateClient'
 import { isManualUpdateChannel } from '../lib/updateClient'
@@ -53,7 +62,10 @@ const DEFAULTS_EDITOR = {
   liveAnimationMode: 'blur' as const,
   fontFamily: "'MiSans', 'Mi Sans', system-ui, -apple-system, 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
   previewFontFamily: "'MiSans', 'Mi Sans', system-ui, -apple-system, 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
-  fontSize: 20, lineHeight: 2.0, previewFontSize: 20, previewLineHeight: 2.0,
+  fontSize: DEFAULT_EDITOR_FONT_SIZE,
+  lineHeight: DEFAULT_EDITOR_LINE_HEIGHT,
+  previewFontSize: DEFAULT_EDITOR_FONT_SIZE,
+  previewLineHeight: DEFAULT_EDITOR_LINE_HEIGHT,
   showLineNumbers: true, wordWrap: true,
   cursorStyle: 'text' as const, mouseSpotlight: true,
 }

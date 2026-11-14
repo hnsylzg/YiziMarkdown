@@ -19,6 +19,10 @@ export const CONTENT_WIDTH_MIN = 400
 export const CONTENT_WIDTH_MAX = 1600
 export const CONTENT_WIDTH_DEFAULT = 900
 
+/** 编辑区与预览区共用的默认正文规格。 */
+export const DEFAULT_EDITOR_FONT_SIZE = 16
+export const DEFAULT_EDITOR_LINE_HEIGHT = 1.5
+
 /** 左侧文件/大纲侧栏宽度（px）的取值区间与默认值。
  *  最小宽度与默认值都取改动前固定的 260px —— 再窄会把顶部「文件/大纲/云端」标签挤变形。
  *  上限与 AI 面板同一策略：不超过 600px，且不超过窗口宽度的 40%（见下方 clampSidebarWidth）。 */
@@ -237,10 +241,10 @@ export const useSettingsStore = create<SettingsState>()(
       // 编辑器
       fontFamily: "'MiSans', 'Mi Sans', system-ui, -apple-system, 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
       previewFontFamily: "'MiSans', 'Mi Sans', system-ui, -apple-system, 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
-      fontSize: 20,
-      lineHeight: 2.0,
-      previewFontSize: 20,
-      previewLineHeight: 2.0,
+      fontSize: DEFAULT_EDITOR_FONT_SIZE,
+      lineHeight: DEFAULT_EDITOR_LINE_HEIGHT,
+      previewFontSize: DEFAULT_EDITOR_FONT_SIZE,
+      previewLineHeight: DEFAULT_EDITOR_LINE_HEIGHT,
       showLineNumbers: true,
       wordWrap: true,
       codeBlockWrap: false,
