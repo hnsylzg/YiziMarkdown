@@ -146,14 +146,18 @@ pub fn markdown_to_docx(
         }
 
         if include_toc {
-            // Prefer keeping Pandoc's original TOC content control. If moving it
-            // fails, retain the valid document with the TOC at the default location.
+            // Prefer keeping Pandoc's original TOC content control. A normal
+            // "not found" result keeps the TOC at Pandoc's default location;
+            // package-level errors must fail instead of exporting a sentinel.
             match move_pandoc_toc_to_marker(&temp_output) {
                 Ok(true) => {}
                 Ok(false) => {
                     eprintln!("PANDOC_TOC_MOVE_SKIPPED: TOC marker or content control not found")
                 }
-                Err(e) => eprintln!("PANDOC_TOC_MOVE_FAILED: {}", e),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&temp_output);
+                    return Err(format!("{}: failed to place TOC: {}", PANDOC_FAILED, e));
+                }
             }
         }
 
@@ -194,7 +198,36 @@ fn paragraph_end_after(xml: &str, pos: usize) -> Option<usize> {
     xml[pos..].find("</w:p>").map(|i| pos + i + "</w:p>".len())
 }
 
-/// Move Pandoc's entire TOC content control (`w:sdt`) to the unique marker.
+/// Replace each TOC marker paragraph with the supplied block, or remove the
+/// marker paragraphs when no block is supplied.
+fn replace_pandoc_toc_markers(xml: &str, toc_block: Option<&str>) -> Option<String> {
+    let mut out = String::with_capacity(xml.len());
+    let mut cursor = 0;
+    let mut replaced = false;
+
+    while let Some(relative) = xml[cursor..].find(PANDOC_TOC_MARKER) {
+        let marker_pos = cursor + relative;
+        let paragraph_start = paragraph_start_before(xml, marker_pos)?;
+        let paragraph_end = paragraph_end_after(xml, marker_pos)?;
+        if paragraph_start < cursor {
+            return None;
+        }
+        out.push_str(&xml[cursor..paragraph_start]);
+        if let Some(block) = toc_block {
+            out.push_str(block);
+        }
+        cursor = paragraph_end;
+        replaced = true;
+    }
+
+    if !replaced {
+        return None;
+    }
+    out.push_str(&xml[cursor..]);
+    Some(out)
+}
+
+/// Move Pandoc's entire TOC content control (`w:sdt`) to every marker.
 ///
 /// Moving the whole `sdt` is essential: a bare TOC field loses its
 /// `TOCHeading`, content-control frame and Word's context-menu behavior.
@@ -213,23 +246,8 @@ fn move_pandoc_toc_xml(xml: &str) -> Option<String> {
         return None;
     }
 
-    let marker_pos = xml.find(PANDOC_TOC_MARKER)?;
-    let marker_start = paragraph_start_before(xml, marker_pos)?;
-    let marker_end = paragraph_end_after(xml, marker_pos)?;
-    if marker_start >= toc_start && marker_start < toc_end {
-        return None;
-    }
-    if marker_start < toc_start {
-        return None;
-    }
-
-    Some(format!(
-        "{}{}{}{}",
-        &xml[..toc_start],
-        &xml[toc_end..marker_start],
-        toc_block,
-        &xml[marker_end..],
-    ))
+    let without_toc = format!("{}{}", &xml[..toc_start], &xml[toc_end..]);
+    replace_pandoc_toc_markers(&without_toc, Some(toc_block))
 }
 
 fn move_pandoc_toc_to_marker(docx: &Path) -> Result<bool, String> {
@@ -254,10 +272,14 @@ fn move_pandoc_toc_to_marker(docx: &Path) -> Result<bool, String> {
         return Ok(false);
     };
     let xml = String::from_utf8(document.1.clone()).map_err(|e| e.to_string())?;
-    let Some(moved) = move_pandoc_toc_xml(&xml) else {
+    let moved_toc = move_pandoc_toc_xml(&xml);
+    let toc_moved = moved_toc.is_some();
+    // If moving fails, keep Pandoc's default TOC position but never leave the
+    // internal sentinel visible in the exported document.
+    let Some(cleaned) = moved_toc.or_else(|| replace_pandoc_toc_markers(&xml, None)) else {
         return Ok(false);
     };
-    document.1 = moved.into_bytes();
+    document.1 = cleaned.into_bytes();
 
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default()
@@ -270,7 +292,7 @@ fn move_pandoc_toc_to_marker(docx: &Path) -> Result<bool, String> {
     }
     let output = writer.finish().map_err(|e| e.to_string())?.into_inner();
     std::fs::write(docx, output).map_err(|e| e.to_string())?;
-    Ok(true)
+    Ok(toc_moved)
 }
 
 pub fn is_valid_template(path: &Path) -> bool {
@@ -414,7 +436,7 @@ mod tests {
             "<w:p><w:pPr><w:pStyle w:val=\"TOCHeading\"/></w:pPr>",
             "<w:r><w:t>Table of Contents</w:t></w:r></w:p>",
             "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/>",
-            "<w:instrText>TOC \\o &quot;1-6&quot;</w:instrText>",
+            "<w:instrText>TOC \\o &quot;1-3&quot;</w:instrText>",
             "<w:fldChar w:fldCharType=\"end\"/></w:r></w:p>",
             "</w:sdtContent></w:sdt>",
             "<w:p><w:r><w:t>before</w:t></w:r></w:p>",
@@ -428,6 +450,54 @@ mod tests {
         assert!(moved.contains("TOCHeading"));
         assert!(moved.find("before") < moved.find("docPartGallery"));
         assert!(moved.find("docPartGallery") < moved.find("after"));
+    }
+
+    #[test]
+    fn moves_toc_content_control_to_every_marker() {
+        let xml = concat!(
+            "<w:body>",
+            "<w:sdt><w:sdtPr><w:docPartObj>",
+            "<w:docPartGallery w:val=\"Table of Contents\"/>",
+            "</w:docPartObj></w:sdtPr><w:sdtContent>",
+            "<w:p><w:pPr><w:pStyle w:val=\"TOCHeading\"/></w:pPr>",
+            "<w:r><w:t>Table of Contents</w:t></w:r></w:p>",
+            "<w:p><w:r><w:instrText>TOC \\o &quot;1-3&quot;</w:instrText></w:r></w:p>",
+            "</w:sdtContent></w:sdt>",
+            "<w:p><w:r><w:t>before</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>YIZIMARKDOWN_PANDOC_TOC_7F3A2C91</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>middle</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>YIZIMARKDOWN_PANDOC_TOC_7F3A2C91</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>after</w:t></w:r></w:p>",
+            "</w:body>",
+        );
+        let moved = move_pandoc_toc_xml(xml).expect("TOC should move");
+        assert!(!moved.contains(PANDOC_TOC_MARKER), "{}", moved);
+        assert_eq!(
+            moved
+                .matches("docPartGallery w:val=\"Table of Contents\"")
+                .count(),
+            2
+        );
+        assert!(moved.find("before") < moved.find("docPartGallery"));
+        assert!(moved.find("middle") > moved.find("docPartGallery"));
+        assert!(moved.rfind("docPartGallery").unwrap() < moved.find("after").unwrap());
+    }
+
+    #[test]
+    fn removes_marker_without_moving_toc_as_fallback() {
+        let xml = concat!(
+            "<w:body>",
+            "<w:sdt><w:sdtPr><w:docPartObj>",
+            "<w:docPartGallery w:val=\"Table of Contents\"/>",
+            "</w:docPartObj></w:sdtPr><w:sdtContent>",
+            "<w:p><w:r><w:instrText>TOC \\o &quot;1-3&quot;</w:instrText></w:r></w:p>",
+            "</w:sdtContent></w:sdt>",
+            "<w:p><w:r><w:t>YIZIMARKDOWN_PANDOC_TOC_7F3A2C91</w:t></w:r></w:p>",
+            "</w:body>",
+        );
+        let cleaned = replace_pandoc_toc_markers(xml, None).expect("marker should be removed");
+        assert!(!cleaned.contains(PANDOC_TOC_MARKER), "{}", cleaned);
+        assert!(cleaned.contains("docPartGallery w:val=\"Table of Contents\""));
     }
 
     #[test]
@@ -459,8 +529,8 @@ mod tests {
 
         let output = dir.join("output.docx");
         let md = format!(
-            "# 标题\n\nbefore\n\n```{{=openxml}}\n<w:p><w:r><w:t>{}</w:t></w:r></w:p>\n```\n\nafter\n\n## 第二章\n",
-            PANDOC_TOC_MARKER
+            "# 标题\n\nbefore\n\n```{{=openxml}}\n<w:p><w:r><w:t>{marker}</w:t></w:r></w:p>\n```\n\nafter\n\n```{{=openxml}}\n<w:p><w:r><w:t>{marker}</w:t></w:r></w:p>\n```\n\ntail\n\n## 第二章\n",
+            marker = PANDOC_TOC_MARKER
         );
         markdown_to_docx(&md, &output, Some(&dir), Some(&template), true, "目录").unwrap();
         let bytes = std::fs::read(&output).unwrap();
@@ -474,10 +544,18 @@ mod tests {
             .unwrap();
         assert!(!document.contains(PANDOC_TOC_MARKER), "{}", document);
         assert!(document.contains("docPartGallery w:val=\"Table of Contents\""));
+        assert_eq!(
+            document
+                .matches("docPartGallery w:val=\"Table of Contents\"")
+                .count(),
+            2
+        );
         assert!(document.contains("TOCHeading"));
         assert!(document.contains("目录"));
         assert!(document.find("before") < document.find("docPartGallery"));
         assert!(document.find("docPartGallery") < document.find("after"));
+        assert!(document.find("after").unwrap() < document.rfind("docPartGallery").unwrap());
+        assert!(document.rfind("docPartGallery").unwrap() < document.find("tail").unwrap());
 
         let _ = std::fs::remove_file(template);
         let _ = std::fs::remove_file(output);

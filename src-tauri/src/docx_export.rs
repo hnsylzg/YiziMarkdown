@@ -20,6 +20,10 @@ type EventIter<'a> = std::iter::Peekable<Parser<'a>>;
 /// （例如测试或别的调用方没走前端预处理）。
 const TOC_MARKER: &str = "<!--yizi:toc-->";
 
+/// 与前端 `DEFAULT_DOCX_TOC_MAX_LEVEL` 对齐；仅用于旧输入缺少
+/// `layout.toc.maxLevel` 时的反序列化兜底。
+const DEFAULT_DOCX_TOC_MAX_LEVEL: u32 = 3;
+
 /// 目录占位判定：HTML 注释标记，或直接传进来的裸 `[toc]` / `[[toc]]`
 fn is_toc_placeholder(text: &str) -> bool {
     let t = text.trim();
@@ -837,7 +841,7 @@ pub struct DocxTocLayout {
 impl Default for DocxTocLayout {
     fn default() -> Self {
         Self {
-            max_level: 6,
+            max_level: DEFAULT_DOCX_TOC_MAX_LEVEL,
             line_height: 1.15,
             entry_gap_em: 3.0 / 11.0,
             heading_scale: 13.0 / 11.0,
@@ -3032,7 +3036,7 @@ impl DocxBuilder {
             }
             let label = if text.trim().is_empty() { " " } else { text };
             let text_run = self.run(label, InlineState::default(), false, None);
-            // 点线 + 页码：制表位（右对齐、dot leader）定义在 TOC1-6 样式里。
+            // 点线 + 页码：制表位（右对齐、dot leader）定义在 TOC1-3 样式里。
             // 页码走 `PAGEREF` 域，但**域结果先填一个估算值**（`collect_toc` 按块高累加算出）——
             // 这样打开文档就有页码可看，不必先按 F9；用户按 F9 后 Word 重新排版，
             // 用真实页码覆盖这个估算值。纯文本而非嵌套域，Word 不会弹「域可能引用其他文件」。
@@ -5227,21 +5231,20 @@ mod tests {
         assert!(doc.contains(TOC_CONTENT_CONTROL_CLOSE), "目录内容控件未闭合: {}", doc);
         let sdt = doc.find(TOC_CONTENT_CONTROL_OPEN).unwrap();
         let heading = doc.find("<w:pStyle w:val=\"TocHeading\"/>").unwrap();
-        let field = doc.find(" TOC \\o \"1-6\"").unwrap();
+        let field = doc.find(" TOC \\o \"1-3\"").unwrap();
         let close = doc.find(TOC_CONTENT_CONTROL_CLOSE).unwrap();
         assert!(sdt < heading && heading < field && field < close, "目录内容控件顺序错误: {}", doc);
-        // 目录收全部 1-6 级
-        assert!(doc.contains(" TOC \\o \"1-6\" \\h \\z \\u "), "目录域层级不对: {}", doc);
+        // 目录默认收 1-3 级
+        assert!(doc.contains(" TOC \\o \"1-3\" \\h \\z \\u "), "目录域层级不对: {}", doc);
         assert!(doc.contains("<w:pStyle w:val=\"TOC1\"/>"), "TOC1 缺失: {}", doc);
         assert!(doc.contains("<w:pStyle w:val=\"TOC2\"/>"), "TOC2 缺失: {}", doc);
         assert!(doc.contains("<w:pStyle w:val=\"TOC3\"/>"), "TOC3 缺失: {}", doc);
-        assert!(doc.contains("<w:pStyle w:val=\"TOC4\"/>"), "TOC4 缺失: {}", doc);
-        assert!(doc.contains("<w:pStyle w:val=\"TOC6\"/>"), "TOC6 缺失: {}", doc);
-        // 书签与超链接一一对应（1-6 级都挂）
+        assert!(!doc.contains("<w:pStyle w:val=\"TOC4\"/>"), "TOC4 不应存在: {}", doc);
+        // 书签与超链接一一对应（只给 1-3 级挂）
         assert!(doc.contains("<w:bookmarkStart w:id=\"1\" w:name=\"_Toc000000001\"/>"), "书签缺失: {}", doc);
         assert!(doc.contains("<w:hyperlink w:anchor=\"_Toc000000001\""), "目录超链接缺失: {}", doc);
-        assert!(doc.contains("_Toc000000004"), "H4 也应挂目录书签: {}", doc);
-        assert!(doc.contains("_Toc000000006"), "H6 也应挂目录书签: {}", doc);
+        assert!(doc.contains("_Toc000000003"), "H3 应挂目录书签: {}", doc);
+        assert!(!doc.contains("_Toc000000004"), "H4 不应挂目录书签: {}", doc);
     }
 
     #[test]
@@ -5261,7 +5264,7 @@ mod tests {
             "带框目录内容控件没有完整包住表格: {}",
             framed
         );
-        // DOCX 的目录是 TOC 域 + TOC1-6 样式，不能额外套一层无序列表编号
+        // DOCX 的目录是 TOC 域 + TOC1-3 样式，不能额外套一层无序列表编号
         assert!(!framed.contains("<w:numPr>"), "DOCX 目录不应带无序列表编号: {}", framed);
 
         let framed_styles = docx_part(
@@ -5335,7 +5338,7 @@ mod tests {
     fn raw_toc_paragraph_is_supported() {
         // 前端正常会换成 HTML 标记；直接调用 markdown_to_docx 的测试/其它调用方传裸 [toc] 也要能认。
         let doc = xml_of("# A\n\n[toc]\n\n## B\n");
-        assert!(doc.contains(" TOC \\o \"1-6\" \\h \\z \\u "), "裸 [toc] 未生成目录域: {}", doc);
+        assert!(doc.contains(" TOC \\o \"1-3\" \\h \\z \\u "), "裸 [toc] 未生成目录域: {}", doc);
         assert!(!doc_text(&doc).contains("[toc]"), "裸 [toc] 仍留在正文: {}", doc);
     }
 

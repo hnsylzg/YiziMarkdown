@@ -12,6 +12,7 @@
 
 import MarkdownIt from 'markdown-it'
 import { splitFrontMatter } from './frontMatter.ts'
+import { DEFAULT_DOCX_TOC_MAX_LEVEL } from './docxLayout.ts'
 import {
   collectTocItems,
   hasTocPlaceholder,
@@ -140,7 +141,7 @@ export function normalizeAlertTitles(markdown: string): string {
 export async function prepareMarkdownForDocx(
   markdown: string,
   renderMermaid?: (code: string) => Promise<string | null>,
-  tocMaxLevel = 6,
+  tocMaxLevel = DEFAULT_DOCX_TOC_MAX_LEVEL,
 ): Promise<string> {
   // 目录域只收 1..tocMaxLevel 级；如果文档只有更深的标题，域结果会是空的，
   // 这时不生成目录（与 Word 里的实际结果一致，避免只留一个空「目录」标题）。
@@ -168,7 +169,9 @@ export async function prepareMarkdownForDocx(
 export async function prepareMarkdownForPandoc(
   markdown: string,
   renderMermaid?: (code: string) => Promise<string | null>,
-  tocMaxLevel = 6,
+  // Pandoc 与内置 DOCX 的目录默认都收 1-3 级。这里必须用同一口径判断是否
+  // 真能生成条目，避免只有 H4-H6 时生成空目录。
+  tocMaxLevel = DEFAULT_DOCX_TOC_MAX_LEVEL,
 ): Promise<{ markdown: string; includeToc: boolean }> {
   const md = new MarkdownIt({ html: true })
   const hasEligibleHeading = collectTocItems(md.parse(splitFrontMatter(markdown).body, {}))

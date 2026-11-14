@@ -83,15 +83,15 @@ test('DOCX 预处理：行内上下标/高亮原样交给 Rust（前端不再各
   assert.ok(!out.includes('<mark>'), out)
 })
 
-test('显式限制 3 级：只有 H4 时不生成 TOC 域', async () => {
+test('默认限制 3 级：只有 H4 时不生成 TOC 域', async () => {
   const src = '#### 太深的标题\n\n[toc]\n'
-  const out = await prepareMarkdownForDocx(src, undefined, 3)
+  const out = await prepareMarkdownForDocx(src)
   assert.ok(!out.includes(DOCX_TOC_MARKER), out)
   assert.ok(out.includes('#### 太深的标题'), out)
 })
 
-test('默认收 1-6 级：只有 H4 也生成 TOC 域', async () => {
-  const src = '#### 深标题\n\n[toc]\n'
+test('默认收 1-3 级：H3 仍生成 TOC 域', async () => {
+  const src = '### 三级标题\n\n[toc]\n'
   const out = await prepareMarkdownForDocx(src)
   assert.ok(out.includes(DOCX_TOC_MARKER), out)
 })
@@ -163,9 +163,18 @@ test('Pandoc 预处理：代码块里的 [toc] 不启用目录', async () => {
 })
 
 test('Pandoc 预处理：没有可用标题时不启用目录，仍清理占位行', async () => {
-  const out = await prepareMarkdownForPandoc('#### 太深的标题\n\n[toc]\n', undefined, 3)
+  const out = await prepareMarkdownForPandoc('#### 太深的标题\n\n[toc]\n')
   assert.equal(out.includeToc, false)
   assert.ok(!out.markdown.includes('[toc]'), out.markdown)
+})
+
+test('Pandoc 预处理：多个 [toc] 都保留独立的原位目标', async () => {
+  const src = '# 一级\n\n[toc]\n\n## 二级\n\n[[toc]]\n\n### 三级\n'
+  const out = await prepareMarkdownForPandoc(src)
+  assert.equal(out.includeToc, true)
+  assert.equal(out.markdown.split(PANDOC_TOC_MARKER).length - 1, 2)
+  assert.ok(!out.markdown.includes('[toc]'), out.markdown)
+  assert.ok(!out.markdown.includes('[[toc]]'), out.markdown)
 })
 
 test('Pandoc 预处理：Mermaid 渲染为图片，失败时保留代码块', async () => {

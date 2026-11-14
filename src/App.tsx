@@ -1789,7 +1789,6 @@ function App() {
           const pandocDoc = await prepareMarkdownForPandoc(
             tab.content,
             (code) => renderMermaidSvgForExport(code, docxMermaidPalette, false),
-            6,
           )
           tocIncluded = pandocDoc.includeToc
           const pandocTocTitle = translate(getCurrentLang(), 'docx.tocTitle')

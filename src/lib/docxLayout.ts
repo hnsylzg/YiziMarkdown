@@ -146,6 +146,9 @@ export interface DocxLayout {
 const PX_PER_CM = 96 / 2.54
 const CM = (cm: number) => (cm * PX_PER_CM * 0.75) / 11 // cm → em（以 11pt 为基准）
 
+/** 内置 DOCX 与 Pandoc 目录共用的默认标题深度：只收录 H1-H3。 */
+export const DEFAULT_DOCX_TOC_MAX_LEVEL = 3
+
 /** 通用族 / 系统关键字 → 具体字体名（与 Rust 侧 `css_generic_to_font` 保持同一口径） */
 const GENERIC_FONTS: Record<string, string> = {
   'system-ui': 'Microsoft YaHei',
@@ -266,6 +269,12 @@ export function buildDocxLayout(
       borderPt: 0.5,
     },
     rule: { beforeEm: 6 / 11, afterEm: 6 / 11 },
-    toc: { maxLevel: 6, lineHeight: 1.15, entryGapEm: 3 / 11, headingScale: 13 / 11, headingAfterEm: 6 / 11 },
+    toc: {
+      maxLevel: DEFAULT_DOCX_TOC_MAX_LEVEL,
+      lineHeight: 1.15,
+      entryGapEm: 3 / 11,
+      headingScale: 13 / 11,
+      headingAfterEm: 6 / 11,
+    },
   }
 }

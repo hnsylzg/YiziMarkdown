@@ -2,11 +2,17 @@
  * Word 导出排版规范：字体拆分与默认版式。
  *
  * 重点不是断言某个像素值，而是锁住「拉丁 / 东亚字体分开」「段距只走段前」
- * 「目录默认 1-6 级」这三条规则，避免又回到 Rust 里各写一套常量。
+ * 「目录默认 1-3 级」这三条规则，避免又回到 Rust 里各写一套常量。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { WORD_DEFAULT_FONTS, buildDocxLayout, resolveDocxFonts, splitFontStack } from '../src/lib/docxLayout.ts'
+import {
+  DEFAULT_DOCX_TOC_MAX_LEVEL,
+  WORD_DEFAULT_FONTS,
+  buildDocxLayout,
+  resolveDocxFonts,
+  splitFontStack,
+} from '../src/lib/docxLayout.ts'
 
 test('字体栈：拉丁与东亚字体拆分（Inter + 微软雅黑）', () => {
   const fonts = resolveDocxFonts("Inter, 'Microsoft YaHei', system-ui, sans-serif", 'Consolas')
@@ -58,9 +64,10 @@ test('字体：关闭「字体跟随预览」使用 Word 经典默认字体', ()
 
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-9
 
-test('版式：目录默认收 1-6 级，段距只走段前', () => {
+test('版式：目录默认收 1-3 级，段距只走段前', () => {
   const layout = buildDocxLayout('Inter, Microsoft YaHei, sans-serif', 'Consolas')
-  assert.equal(layout.toc.maxLevel, 6)
+  assert.equal(DEFAULT_DOCX_TOC_MAX_LEVEL, 3)
+  assert.equal(layout.toc.maxLevel, DEFAULT_DOCX_TOC_MAX_LEVEL)
   assert.equal(layout.body.align, 'both')
   // Word 段前/段后是相加的：规范必须把段后固定为 0
   assert.deepEqual(layout.headings.afterEm, [0, 0, 0, 0, 0, 0])
