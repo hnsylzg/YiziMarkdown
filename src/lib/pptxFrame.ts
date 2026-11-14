@@ -1,10 +1,8 @@
 /**
- * pptxFrame.ts — 隐藏 iframe（演示屏幕 16:9 视口）里的「演示复刻」与测量宿主。
+ * pptxFrame.ts — 隐藏 iframe（固定 1920×1080 设计画布）里的「演示复刻」与测量宿主。
  *
- * 为什么必须是 iframe 而不是容器：slideshow.css 的排版大量依赖 `vw/vh`
- * （内容边距、字号 clamp、栏距）。父窗口里放一个固定宽度 div 不会改变
- * `vw` 的解析基准 —— 只有 iframe 使用与演示屏幕一致的 16:9 viewport，
- * 布局才与全屏演示相同。场景层再把结果归一化到 PowerPoint 页面。
+ * 演示与导出共用固定 1920×1080 画布。iframe 不读取屏幕尺寸或系统缩放；
+ * 场景层以固定 144 px/in 映射到 PowerPoint 页面。
  *
  * 本模块只负责「把页面渲染成可测量的 DOM」：克隆样式、逐页挂载、插件后处理、
  * 图片/图表落成 data URL、等字体与图片就绪。DOM → 场景图在 pptxScene.ts。
@@ -20,6 +18,10 @@ import type { SlideKind } from './slides'
 import type { PptxWarning } from './pptxTypes'
 import { escapeHtml } from './slideDeck'
 import { rectOf } from './pptxTheme'
+import {
+  SLIDE_CANVAS_HEIGHT,
+  SLIDE_CANVAS_WIDTH,
+} from './slideCanvas'
 
 export interface FrameCreateOptions {
   /** 主题 id（用于 `.yizi-slideshow.theme-*`） */
@@ -34,9 +36,6 @@ export interface FrameCreateOptions {
   docTitle?: string
   /** 演示字号系数（settings 里的 slideFontScale；用于超页时按比例回缩重排） */
   baseFontScale?: number
-  /** 演示模式实际视口（通常是当前屏幕的 16:9 内容区） */
-  viewportWidth?: number
-  viewportHeight?: number
 }
 
 export interface RenderSlideSpec {
@@ -60,8 +59,8 @@ export interface RenderResult {
   warnings: PptxWarning[]
 }
 
-const FRAME_W = 1280
-const FRAME_H = 720
+const FRAME_W = SLIDE_CANVAS_WIDTH
+const FRAME_H = SLIDE_CANVAS_HEIGHT
 const LOAD_TIMEOUT = 15000
 const IMAGE_TIMEOUT = 8000
 
@@ -93,6 +92,8 @@ const EXPORT_OVERRIDES = `
 html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; background: transparent !important; }
 *, *::before, *::after { transition: none !important; animation: none !important; }
 .ys-slide { overflow: hidden !important; opacity: 1 !important; visibility: visible !important; transform: none !important; }
+.ys-stage-viewport { position: absolute !important; inset: 0 !important; }
+.ys-stage { transform: none !important; }
 .ys-hud, .ys-progress, .ys-exit-btn, .ys-flip-layer, .ys-notes-panel, .ys-notes-edge, .ys-notes-hint,
 .ys-theme-menu, .ys-dismiss, .ys-title, .ys-overlay { display: none !important; }
 [data-fragment] { opacity: 1 !important; transform: none !important; }
@@ -131,10 +132,15 @@ ${themeCss}
 </head>
 <body>
 <div class="${cls}"${styleAttr ? ` style="${escapeAttr(styleAttr)}"` : ''}>
-  <div class="ys-deck">
-    <section id="pptx-slide" class="ys-slide"></section>
+  <div class="ys-stage-viewport">
+    <div class="ys-stage" style="width:${SLIDE_CANVAS_WIDTH}px;height:${SLIDE_CANVAS_HEIGHT}px">
+      <div class="ys-deck">
+        <section id="pptx-slide" class="ys-slide"></section>
+      </div>
+      <div class="ys-footer"><span class="ys-chapter"></span><span class="ys-pos"></span></div>
+      <div class="ys-progress"></div>
+    </div>
   </div>
-  <div class="ys-footer"><span class="ys-chapter"></span><span class="ys-pos"></span></div>
 </div>
 </body></html>`
 }
@@ -230,16 +236,14 @@ export class PptxFrame {
       docBaseDir: string | null
     },
   ): Promise<PptxFrame> {
-    const width = opts.viewportWidth && opts.viewportWidth > 0 ? opts.viewportWidth : FRAME_W
-    const height = opts.viewportHeight && opts.viewportHeight > 0 ? opts.viewportHeight : FRAME_H
     const iframe = document.createElement('iframe')
     iframe.setAttribute('aria-hidden', 'true')
     iframe.style.cssText = [
       'position:fixed',
       'left:-20000px',
       'top:0',
-      `width:${width}px`,
-      `height:${height}px`,
+      `width:${FRAME_W}px`,
+      `height:${FRAME_H}px`,
       'border:0',
       'pointer-events:none',
       'visibility:visible',

@@ -8,7 +8,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { measureSceneOverflow } from '../src/lib/pptxScene.ts'
-import { presentationViewport } from '../src/lib/pptxViewport.ts'
+import {
+  SLIDE_CANVAS_PX_PER_IN,
+  slideCanvasPxToPt,
+  slideCanvasScale,
+} from '../src/lib/slideCanvas.ts'
 import type { SceneNode } from '../src/lib/pptxTypes.ts'
 
 const W = 13.333
@@ -31,19 +35,19 @@ test('PPTX 超页：全部节点在页内时四边都是 0', () => {
 
 test('PPTX 超页：顶部负坐标按真实溢出量计入（居中版式的典型场景）', () => {
   const o = measureSceneOverflow([text(1, -0.25, 4, 1)], W, H)
-  assert.equal(o.top, 24)
+  assert.equal(o.top, Math.round(0.25 * SLIDE_CANVAS_PX_PER_IN))
   assert.equal(o.bottom, 0)
 })
 
 test('PPTX 超页：底部与右侧同时溢出时分别报告', () => {
   const o = measureSceneOverflow([text(12.9, 7.0, 0.6, 0.6)], W, H)
-  assert.equal(o.right, Math.round((13.5 - W) * 96))
-  assert.equal(o.bottom, Math.round((7.6 - H) * 96))
+  assert.equal(o.right, Math.round((13.5 - W) * SLIDE_CANVAS_PX_PER_IN))
+  assert.equal(o.bottom, Math.round((7.6 - H) * SLIDE_CANVAS_PX_PER_IN))
 })
 
 test('PPTX 超页：左侧负坐标计入 left', () => {
   const o = measureSceneOverflow([text(-0.1, 1, 4, 1)], W, H)
-  assert.equal(o.left, 10)
+  assert.equal(o.left, Math.round(0.1 * SLIDE_CANVAS_PX_PER_IN))
 })
 
 test('PPTX 超页：空场景不报溢出', () => {
@@ -58,16 +62,11 @@ test('PPTX 超页：装饰元素（金句引号/章节序号）不参与超页�
   })
 })
 
-test('PPTX 视口：1080p 全屏保持原尺寸，不退回 1280×720 基准', () => {
-  assert.deepEqual(presentationViewport(1920, 1080), { width: 1920, height: 1080 })
-  assert.deepEqual(presentationViewport(2560, 1440), { width: 2560, height: 1440 })
-})
-
-test('PPTX 视口：非 16:9 屏幕按可容纳的 16:9 内容区测量', () => {
-  assert.deepEqual(presentationViewport(1920, 1200), { width: 1920, height: 1080 })
-  assert.deepEqual(presentationViewport(1600, 900), { width: 1600, height: 900 })
-})
-
-test('PPTX 视口：非法尺寸回落到 1280×720', () => {
-  assert.deepEqual(presentationViewport(0, Number.NaN), { width: 1280, height: 720 })
+test('PPTX 设计画布：1920 显示只缩放，不改变字号磅值', () => {
+  assert.equal(slideCanvasScale(1920, 1080), 1)
+  assert.equal(slideCanvasScale(2560, 1440), 4 / 3)
+  assert.equal(slideCanvasScale(3840, 2160), 2)
+  assert.equal(slideCanvasPxToPt(30), 15)
+  assert.equal(slideCanvasPxToPt(72), 36)
+  assert.equal(slideCanvasPxToPt(60), 30)
 })

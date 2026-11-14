@@ -2,8 +2,8 @@
  * pptxScene.ts — 把「已经渲染好的演示 DOM」测量成 **场景图**（见 pptxTypes.ts）。
  *
  * 为什么先量再画：PowerPoint 没有 CSS 布局。要让导出与演示逐块对齐，唯一可行的做法
- * 是在演示屏幕的真实 16:9 视口里让浏览器排一次版，再把每个盒子的位置 / 字号 / 颜色读出来，
- * 归一化到 13.333×7.5in。这里**不复制** slideshow.css 的数值，而是读 computed style：
+ * 是在固定 1920×1080 设计画布里让浏览器排一次版，再把每个盒子的位置 / 字号 / 颜色读出来，
+ * 映射到 13.333×7.5in。这里**不复制** slideshow.css 的数值，而是读 computed style：
  * 主题、明暗、字号缩放、填充比例、分栏样式改了，场景图自动跟着变。
  *
  * 装饰（标题下划线、章节大序号、金句对角引号、agenda 数字、列表圆点/序号）来自
@@ -19,6 +19,10 @@ import type {
   SceneTableCell, SlideScene, TextNode,
 } from './pptxTypes.ts'
 import { splitInlineMath } from './inlineMath.ts'
+import {
+  SLIDE_CANVAS_PX_PER_IN,
+  slideCanvasPxToPt,
+} from './slideCanvas.ts'
 import {
   borderRadiusPx, cleanText, colorAlpha, contentBoxPx, flattenColor, fontSizePx, hasStrike,
   hasUnderline, isBold, letterSpacingPt, lineHeightPx, num, parseBoxShadow, parseColor,
@@ -43,7 +47,6 @@ interface Box { x: number; y: number; w: number; h: number }
 const EPS = 2
 const SLIDE_W_IN = 40 / 3
 const SLIDE_H_IN = 7.5
-const CSS_PX_PER_IN = 96
 
 /**
  * 用场景节点的真实包围盒计算四边溢出（px）。
@@ -54,7 +57,7 @@ const CSS_PX_PER_IN = 96
  *   · scrollHeight 不含子元素 margin，也不含横向溢出；
  *   · 这里按所有最终要落进 PPT 的节点取并集，顶部、底部、左右都能精确报告。
  *
- * 节点坐标是 inch，返回值统一换算成 1280×720 基准的 CSS px。
+ * 节点坐标是 inch，返回值统一换算成 1920×1080 基准的 CSS px。
  */
 export function measureSceneOverflow(
   nodes: SceneNode[],
@@ -83,7 +86,7 @@ export function measureSceneOverflow(
   }
   if (!Number.isFinite(minX)) return { top: 0, right: 0, bottom: 0, left: 0 }
 
-  const px = (inch: number) => Math.round(Math.max(0, inch) * CSS_PX_PER_IN)
+  const px = (inch: number) => Math.round(Math.max(0, inch) * SLIDE_CANVAS_PX_PER_IN)
   return {
     top: px(-minY),
     right: px(maxX - slideWIn),
@@ -252,11 +255,10 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
   const nodes: SceneNode[] = []
 
   const slideRect = rectOf(slide)
-  // DOM 可能在实际全屏视口（如 1920×1080）中排版；场景图统一换算成
-  // PowerPoint 的 13.333×7.5in。这里只是真实尺寸的坐标归一化，不是整页缩放。
-  const pxPerIn = slideRect.w / SLIDE_W_IN
-  const toIn = (px: number) => round3(px / pxPerIn)
-  const toPt = (px: number) => round2(px / pxPerIn * 72)
+  // 演示与导出共用固定 1920×1080 设计画布；按 144 px/in
+  // 映射到 PowerPoint 的 13.333×7.5in，即 1px = 0.5pt。
+  const toIn = (px: number) => round3(px / SLIDE_CANVAS_PX_PER_IN)
+  const toPt = (px: number) => round2(slideCanvasPxToPt(px))
   const slideCS = styleOf(slide, win)
   const slideBg = flattenColor(slideCS.backgroundColor, '#FFFFFF')
   const padL = num(slideCS.paddingLeft)

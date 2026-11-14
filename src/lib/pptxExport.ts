@@ -3,7 +3,7 @@
  *
  * 顺序：
  *   parseDeck（与演示同一份解析）
- *     → 隐藏 iframe（演示屏幕 16:9 视口，PptxFrame）
+ *     → 隐藏 iframe（固定 1920×1080 设计画布，PptxFrame）
  *     → 逐页 setSlide + buildSlideScene（DOM → 场景图）
  *     → 收集 TeX 调 Rust latex_to_omml
  *     → buildPptx（pptxgenjs + JSZip 后处理）
@@ -22,7 +22,6 @@ import { loadSlideshowThemeCss } from './slideTheme.ts'
 import { resolveColAlign, type SlideColAlign, type SlideColStyle } from './slideColumns.ts'
 import { slideTypographyVars, DEFAULT_SLIDE_TYPOGRAPHY, type SlideTypography } from './slideTypography.ts'
 import { invokeTauriOrThrow } from './tauri.ts'
-import { presentationViewport } from './pptxViewport.ts'
 import type { PptxWarning, SceneNode, SlideScene } from './pptxTypes.ts'
 
 export type PptxOverflowMode = 'warn' | 'shrink'
@@ -50,8 +49,6 @@ export interface PptxExportOptions {
   includeNotes: boolean
   includeFooter: boolean
   overflowMode: PptxOverflowMode
-  /** 演示模式实际视口；缺省读取当前屏幕并收敛到 16:9 */
-  viewport?: { width: number; height: number }
   /** 不传 = 全部页 */
   range?: PptxRange
   onProgress?: (done: number, total: number, label: string) => void
@@ -209,11 +206,6 @@ export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportRes
   const deckTocHtml = buildDeckTocHtml(allSlides)
   const themeCss = await loadSlideshowThemeCss(opts.theme, opts.customCssBase)
   throwIfAborted(opts.signal)
-  const viewport = presentationViewport(
-    opts.viewport?.width ?? window.screen.width,
-    opts.viewport?.height ?? window.screen.height,
-  )
-
   const frame = await PptxFrame.create({
     theme: opts.theme,
     dark: opts.dark,
@@ -225,8 +217,6 @@ export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportRes
     enabledPlugins,
     pluginConfigs,
     docBaseDir: opts.docBaseDir ?? null,
-    viewportWidth: viewport.width,
-    viewportHeight: viewport.height,
   })
 
   const scenes: SlideScene[] = []
