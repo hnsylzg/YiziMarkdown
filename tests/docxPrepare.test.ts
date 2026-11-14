@@ -155,6 +155,15 @@ test('Pandoc 预处理：普通带标题文档不自动生成目录', async () =
   assert.ok(!out.markdown.includes('[toc]'), out.markdown)
 })
 
+test('Pandoc 预处理：front matter 不进入正文', async () => {
+  const src = '---\ntitle: MDWright v3.7.0 导出测试样张\nauthor: 测试\n---\n\n# 一级标题\n\n[toc]\n'
+  const out = await prepareMarkdownForPandoc(src)
+  assert.equal(out.includeToc, true)
+  assert.ok(!out.markdown.includes('MDWright v3.7.0'), out.markdown)
+  assert.ok(!out.markdown.includes('author:'), out.markdown)
+  assert.ok(out.markdown.trimStart().startsWith('# 一级标题'), out.markdown)
+})
+
 test('Pandoc 预处理：代码块里的 [toc] 不启用目录', async () => {
   const src = '# 标题\n\n```markdown\n[toc]\n```\n'
   const out = await prepareMarkdownForPandoc(src)

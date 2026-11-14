@@ -174,11 +174,15 @@ export async function prepareMarkdownForPandoc(
   tocMaxLevel = DEFAULT_DOCX_TOC_MAX_LEVEL,
 ): Promise<{ markdown: string; includeToc: boolean }> {
   const md = new MarkdownIt({ html: true })
-  const hasEligibleHeading = collectTocItems(md.parse(splitFrontMatter(markdown).body, {}))
+  // Pandoc --standalone 会把 YAML title / author / date 自动写进最终 DOCX。
+  // 本应用的 front matter 是文档元信息，不是正文；与内置 DOCX 保持一致，
+  // 只把正文交给 Pandoc，避免导出时凭空多出标题和作者行。
+  const body = splitFrontMatter(markdown).body
+  const hasEligibleHeading = collectTocItems(md.parse(body, {}))
     .some((item) => item.level <= tocMaxLevel)
-  const includeToc = hasTocPlaceholder(markdown) && hasEligibleHeading
+  const includeToc = hasTocPlaceholder(body) && hasEligibleHeading
   let out = replaceTocPlaceholders(
-    markdown,
+    body,
     includeToc ? pandocTocMarkerBlock() : '',
   )
   if (renderMermaid) out = await replaceMermaidFences(out, renderMermaid)
