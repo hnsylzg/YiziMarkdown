@@ -24,11 +24,6 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useI18n } from '../i18n'
 import { CUSTOM_THEME, readUserCss } from '../lib/themeLoader'
 import { normalizeUserCss } from '../lib/userCss'
-import {
-  SLIDE_CANVAS_HEIGHT,
-  SLIDE_CANVAS_WIDTH,
-  slideCanvasScale,
-} from '../lib/slideCanvas'
 import '../styles/slideshow.css'
 
 interface SlideshowProps {
@@ -113,7 +108,29 @@ export default function Slideshow({
   const customCssBase = useSettingsStore((s) => s.customCssBase)
   const [hasUserCss, setHasUserCss] = useState(false)
   const deckRef = useRef<HTMLDivElement>(null)
+  // 1280×720 逻辑画布：屏幕尺寸只改变整体缩放，不触发内部重新排版。
+  const [canvasScale, setCanvasScale] = useState(() => {
+    if (typeof window === 'undefined') return 1
+    return Math.min(window.innerWidth / 1280, window.innerHeight / 720)
+  })
   const stageRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const update = () => {
+      const w = Math.max(1, stage.clientWidth)
+      const h = Math.max(1, stage.clientHeight)
+      setCanvasScale(Math.min(w / 1280, h / 720))
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(stage)
+    window.addEventListener('resize', update)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [])
 
   // 退出相关
   const exitingRef = useRef(false)
@@ -572,33 +589,6 @@ export default function Slideshow({
     return () => { exitFullscreen() }
   }, [])
 
-  // 幻灯片始终在 1920×1080 设计画布内排版；屏幕尺寸和系统缩放
-  // 只改变外层整体缩放，不触发幻灯片内部重新排版。
-  const fitStage = useCallback(() => {
-    const stage = stageRef.current
-    if (!stage) return
-    const viewport = window.visualViewport
-    const scale = slideCanvasScale(
-      viewport?.width ?? window.innerWidth,
-      viewport?.height ?? window.innerHeight,
-    )
-    stage.style.transform = `scale(${scale})`
-  }, [])
-
-  useLayoutEffect(() => {
-    fitStage()
-    const raf = requestAnimationFrame(fitStage)
-    window.addEventListener('resize', fitStage)
-    document.addEventListener('fullscreenchange', fitStage)
-    window.visualViewport?.addEventListener('resize', fitStage)
-    return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('resize', fitStage)
-      document.removeEventListener('fullscreenchange', fitStage)
-      window.visualViewport?.removeEventListener('resize', fitStage)
-    }
-  }, [fitStage])
-
   // 鼠标活动检测：显示/隐藏退出按钮
   useEffect(() => {
     const onMouseMove = () => {
@@ -818,12 +808,8 @@ export default function Slideshow({
         <span>{t('slideshow.exit')}</span>
       </button>
 
-      <div className="ys-stage-viewport">
-        <div
-          className="ys-stage"
-          ref={stageRef}
-          style={{ width: SLIDE_CANVAS_WIDTH, height: SLIDE_CANVAS_HEIGHT }}
-        >
+      <div className="ys-stage" ref={stageRef}>
+        <div className="ys-canvas" style={{ transform: `translate(-50%, -50%) scale(${canvasScale})` }}>
       <div className={`ys-deck ys-dir-${dir}${anim !== 'slide' ? ` ys-anim-${anim}` : ''}${isMac ? ' ys-mac' : ''}`} ref={deckRef} onClick={onDeckClick}>
         {slides.map((slide, i) => {
           const active = i === h

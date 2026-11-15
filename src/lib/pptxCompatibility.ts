@@ -1,13 +1,13 @@
 /**
  * pptxCompatibility.ts — PPTX 导出的兼容性边界。
  *
- * custom 固定使用 1920×1080 设计画布，正文 30px 按 144 px/in 映射到
- * PowerPoint 后为 15pt。作者 1280 基线的 14pt 下限在这里只允许缩小 6.7%，
- * 无法处理长内容，因此 custom 使用 10pt 作为最低正文。
+ * custom 使用 1280×720 逻辑画布和 20px 紧凑正文字号，按 96 px/in 映射到
+ * PowerPoint 后仍为 15pt。14pt 下限只允许缩小 6.7%，无法处理长内容，
+ * 因此 custom 使用 10pt 作为最低正文。
  */
 import { SLIDE_CANVAS_PX_PER_IN } from './slideCanvas.ts'
 
-export const PPTX_BODY_PX = 30
+export const PPTX_BODY_PX = 20
 export const PX_PER_IN = SLIDE_CANVAS_PX_PER_IN
 export const PPTX_BODY_PT = PPTX_BODY_PX * 72 / PX_PER_IN
 /** 正文允许的最小字号（pt） */

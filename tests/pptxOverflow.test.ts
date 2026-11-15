@@ -62,13 +62,13 @@ test('PPTX 超页：装饰元素（金句引号/章节序号）不参与超页�
   })
 })
 
-test('PPTX 设计画布：1920 显示只缩放，不改变字号磅值', () => {
-  assert.equal(slideCanvasScale(1920, 1080), 1)
-  assert.equal(slideCanvasScale(2560, 1440), 4 / 3)
-  assert.equal(slideCanvasScale(3840, 2160), 2)
-  assert.equal(slideCanvasPxToPt(30), 15)
-  assert.equal(slideCanvasPxToPt(72), 36)
-  assert.equal(slideCanvasPxToPt(60), 30)
+test('PPTX 设计画布：1280 显示只缩放，不改变字号磅值', () => {
+  assert.equal(slideCanvasScale(1280, 720), 1)
+  assert.equal(slideCanvasScale(1920, 1080), 1.5)
+  assert.equal(slideCanvasScale(2560, 1440), 2)
+  assert.equal(slideCanvasPxToPt(20), 15)
+  assert.equal(slideCanvasPxToPt(48), 36)
+  assert.equal(slideCanvasPxToPt(40), 30)
 })
 
 test('PPTX 余量：按正文/代码/表格行高预留一行，限制在 0.3~0.5in', () => {

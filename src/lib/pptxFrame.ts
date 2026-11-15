@@ -1,8 +1,8 @@
 /**
- * pptxFrame.ts — 隐藏 iframe（固定 1920×1080 设计画布）里的「演示复刻」与测量宿主。
+ * pptxFrame.ts — 隐藏 iframe（固定 1280×720 逻辑画布）里的「演示复刻」与测量宿主。
  *
- * 演示与导出共用固定 1920×1080 画布。iframe 不读取屏幕尺寸或系统缩放；
- * 场景层以固定 144 px/in 映射到 PowerPoint 页面。
+ * 演示与导出共用固定 1280×720 画布。iframe 不读取屏幕尺寸或系统缩放；
+ * 场景层以固定 96 px/in 映射到 PowerPoint 页面。
  *
  * 本模块只负责「把页面渲染成可测量的 DOM」：克隆样式、逐页挂载、插件后处理、
  * 图片/图表落成 data URL、等字体与图片就绪。DOM → 场景图在 pptxScene.ts。
@@ -92,8 +92,8 @@ const EXPORT_OVERRIDES = `
 html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; background: transparent !important; }
 *, *::before, *::after { transition: none !important; animation: none !important; }
 .ys-slide { overflow: hidden !important; opacity: 1 !important; visibility: visible !important; transform: none !important; }
-.ys-stage-viewport { position: absolute !important; inset: 0 !important; }
-.ys-stage { transform: none !important; }
+.ys-stage { position: absolute !important; inset: 0 !important; }
+.ys-canvas { left: 0 !important; top: 0 !important; transform: none !important; }
 .ys-hud, .ys-progress, .ys-exit-btn, .ys-flip-layer, .ys-notes-panel, .ys-notes-edge, .ys-notes-hint,
 .ys-theme-menu, .ys-dismiss, .ys-title, .ys-overlay { display: none !important; }
 [data-fragment] { opacity: 1 !important; transform: none !important; }
@@ -132,8 +132,8 @@ ${themeCss}
 </head>
 <body>
 <div class="${cls}"${styleAttr ? ` style="${escapeAttr(styleAttr)}"` : ''}>
-  <div class="ys-stage-viewport">
-    <div class="ys-stage" style="width:${SLIDE_CANVAS_WIDTH}px;height:${SLIDE_CANVAS_HEIGHT}px">
+  <div class="ys-stage">
+    <div class="ys-canvas" style="width:${SLIDE_CANVAS_WIDTH}px;height:${SLIDE_CANVAS_HEIGHT}px">
       <div class="ys-deck">
         <section id="pptx-slide" class="ys-slide"></section>
       </div>
