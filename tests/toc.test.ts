@@ -11,6 +11,11 @@ import assert from 'node:assert/strict'
 import { renderMarkdown } from '../src/lib/markdownRenderer.ts'
 import { buildTocMarkdown } from '../src/lib/docxPrepare.ts'
 import { replaceTocPlaceholders, renderDeckTocHtml } from '../src/lib/toc.ts'
+import { useSettingsStore } from '../src/stores/settingsStore.ts'
+
+test('目录边框与背景默认隐藏', () => {
+  assert.equal(useSettingsStore.getState().tocFrame, false)
+})
 
 const SRC = '# 主标题\n\n[toc]\n\n## 一、**加粗** 与 `代码`\n\n### 小节\n'
 

@@ -84,7 +84,7 @@ export interface SettingsState {
   /** 代码块行号开关：预览 / 实时共用，持久化；默认关闭 */
   codeBlockLineNumbers: boolean
   spellCheck: boolean
-  /** [toc] 目录块的边框与背景开关：全局偏好，预览 / 实时 / 阅读共用；默认开启（样式由主题令牌提供） */
+  /** [toc] 目录块的边框与背景开关：全局偏好，预览 / 实时 / 阅读共用；默认隐藏 */
   tocFrame: boolean
   /** 内容区（正文列）最大宽度 px —— 源码 / 实时 / 预览**共用**这一个值。
    *  由正文列边缘的拖拽手柄改写；它只是 max-width 的**上限**，
@@ -268,7 +268,7 @@ export const useSettingsStore = create<SettingsState>()(
       wordWrap: true,
       codeBlockWrap: false,
       codeBlockLineNumbers: false,
-      tocFrame: true,
+      tocFrame: false,
       spellCheck: false,
       // 默认 900：与源码模式改动前一致。注意预览模式里部分主题原本自带 800/700px 的固定宽度，
       // 统一到这个值后会跟随 900 —— 这是「三处共用同一个宽度」的必然结果，属于有意的统一。
@@ -459,8 +459,8 @@ export const useSettingsStore = create<SettingsState>()(
           if (typeof state.codeBlockWrap !== 'boolean') state.codeBlockWrap = false
           // 代码块行号开关。旧存档没有 → false（默认不显示行号）
           if (typeof state.codeBlockLineNumbers !== 'boolean') state.codeBlockLineNumbers = false
-          // 目录边框/背景开关。旧存档没有 → true（预设主题默认带框）
-          if (typeof state.tocFrame !== 'boolean') state.tocFrame = true
+          // 目录边框/背景开关。旧存档没有 → false（默认隐藏目录边框）
+          if (typeof state.tocFrame !== 'boolean') state.tocFrame = false
           if (typeof state.brandName !== 'string') state.brandName = ''
           // v11：演示模式分栏。存量存档没有这两个键 ⇒ 补默认值。
           // 注意升级观感：样式默认是 **card**（有意的默认升级，不是零变化）——
