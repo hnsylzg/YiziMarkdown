@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
 use std::fs;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -42,10 +43,11 @@ use theme_layer::{
 };
 
 use ai_proxy::{ai_cancel, ai_chat, ai_clear_key, ai_has_key, ai_list_models, ai_set_key, ai_verify_key};
-use remote_cache::{ensure_remote_assets_readme, webdav_open, webdav_save};
+use remote_cache::{ensure_remote_assets_readme, webdav_cache_lookup, webdav_open, webdav_save, webdav_sync_cache};
 use webdav::{
     webdav_clear_credentials, webdav_delete, webdav_get_username, webdav_has_credentials,
-    webdav_list, webdav_mkdir, webdav_move, webdav_set_credentials, webdav_test_connection,
+    webdav_list, webdav_mkdir, webdav_move, webdav_read_conditional, webdav_set_credentials,
+    webdav_stat, webdav_test_connection,
 };
 
 
@@ -727,9 +729,146 @@ fn sync_legacy_user_files_at(
     Ok(())
 }
 
+/// 技能提示词文件名只允许 basename，且必须是 Markdown 文件。
+fn safe_skill_file_name(name: &str) -> Result<String, String> {
+    let clean = Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| "Invalid skill file name".to_string())?;
+    if clean.is_empty() || clean.starts_with('.') {
+        return Err("Invalid skill file name".to_string());
+    }
+    if !(clean.ends_with(".md") || clean.ends_with(".markdown")) {
+        return Err("Skill file must end with .md or .markdown".to_string());
+    }
+    Ok(clean)
+}
+
+/// 校验技能清单（纯 JSON，便于单测；不读写文件系统）。
+fn validate_skills_manifest(value: &serde_json::Value) -> Result<(), String> {
+    let skills = value
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "skills 必须是数组".to_string())?;
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut files: HashSet<String> = HashSet::new();
+    for (i, skill) in skills.iter().enumerate() {
+        let id = skill
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("第 {} 个技能缺少 id", i + 1))?;
+        if !ids.insert(id.to_string()) {
+            return Err(format!("技能 ID 重复：{id}"));
+        }
+        let name = skill
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("技能「{id}」缺少名称"))?;
+        let file = skill
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("技能「{name}」缺少提示词文件"))?;
+        let clean = safe_skill_file_name(file)?;
+        if clean != file.trim() {
+            return Err(format!("提示词文件名不能包含路径分隔符：{file}"));
+        }
+        if !files.insert(clean.clone()) {
+            return Err(format!("提示词文件被多个技能重复引用：{clean}"));
+        }
+    }
+    if let Some(hidden) = value.get("hiddenIds") {
+        let ids = hidden
+            .as_array()
+            .ok_or_else(|| "hiddenIds 必须是数组".to_string())?;
+        if ids.iter().any(|v| !v.is_string()) {
+            return Err("hiddenIds 只能包含字符串".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// 合并内置技能与用户技能清单。
+///
+/// 规则：
+/// - `hiddenIds` 里的内置技能不再恢复（用户删除 / 改 ID 后生效）；
+/// - `customized: true` 的同 ID 条目保留用户版本，且不复制内置 `.md`；
+/// - 其余内置技能用新版覆盖，与旧行为一致；
+/// - 用户自建（id 不在内置列表）的技能原样保留。
+///
+/// 返回 `(合并后的清单, 需要从内置目录复制的提示词文件)`。
+fn merge_skill_manifests(
+    builtin: &serde_json::Value,
+    user: &serde_json::Value,
+) -> (serde_json::Value, Vec<String>) {
+    let hidden: Vec<&str> = user
+        .get("hiddenIds")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let user_skills = user
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let builtin_skills = builtin
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let builtin_ids: HashSet<String> = builtin_skills
+        .iter()
+        .filter_map(|s| s.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    let mut merged_skills: Vec<serde_json::Value> = Vec::new();
+    let mut copy_files: Vec<String> = Vec::new();
+
+    for builtin_skill in &builtin_skills {
+        let id = builtin_skill
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if hidden.contains(&id) {
+            continue;
+        }
+        let customized = user_skills.iter().find(|s| {
+            s.get("id").and_then(|v| v.as_str()) == Some(id)
+                && s.get("customized").and_then(|v| v.as_bool()) == Some(true)
+        });
+        if let Some(custom) = customized {
+            merged_skills.push(custom.clone());
+            continue;
+        }
+        merged_skills.push(builtin_skill.clone());
+        if let Some(file) = builtin_skill.get("file").and_then(|v| v.as_str()) {
+            copy_files.push(file.to_string());
+        }
+    }
+
+    for skill in &user_skills {
+        let id = skill.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if hidden.contains(&id) || builtin_ids.contains(id) {
+            continue;
+        }
+        merged_skills.push(skill.clone());
+    }
+
+    let mut merged = builtin.clone();
+    merged["skills"] = serde_json::Value::Array(merged_skills);
+    merged["hiddenIds"] = user
+        .get("hiddenIds")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    (merged, copy_files)
+}
+
 /// 将内置技能从应用目录同步到用户文档目录。
 /// - 首次运行：全量复制
-/// - 版本更新：覆盖内置技能文件，合并 manifest（保留用户自定义技能）
+/// - 版本更新：覆盖未被用户改过的内置技能，合并 manifest（保留用户改动）
 fn sync_builtin_skills() -> Result<(), String> {
     let app_root = get_app_root()?;
     let builtin_dir = app_root.join("skills");
@@ -776,45 +915,16 @@ fn sync_builtin_skills() -> Result<(), String> {
         return Ok(()); // 版本一致，无需同步
     }
 
-    // 版本不同：覆盖内置技能 .md 文件
-    let builtin_skills = builtin_manifest["skills"].as_array();
-    if let Some(skills) = builtin_skills {
-        for skill in skills {
-            if let Some(file) = skill["file"].as_str() {
-                let src = builtin_dir.join(file);
-                let dst = user_dir.join(file);
-                if src.exists() {
-                    let _ = fs::copy(&src, &dst);
-                }
-            }
+    let (merged, copy_files) = merge_skill_manifests(&builtin_manifest, &user_manifest);
+
+    // 只覆盖未被用户改过、且未被隐藏的内置技能文件
+    for file in copy_files {
+        let src = builtin_dir.join(&file);
+        let dst = user_dir.join(&file);
+        if src.exists() {
+            let _ = fs::copy(&src, &dst);
         }
     }
-
-    // 合并 manifest：内置技能 + 用户自定义技能
-    let mut merged_skills: Vec<serde_json::Value> = Vec::new();
-
-    // 先放内置技能（使用新版 manifest）
-    if let Some(skills) = builtin_manifest["skills"].as_array() {
-        merged_skills.extend(skills.iter().cloned());
-    }
-
-    // 追加用户自定义技能（id 不在内置列表中的）
-    if let Some(user_skills) = user_manifest["skills"].as_array() {
-        let builtin_ids: Vec<String> = merged_skills
-            .iter()
-            .filter_map(|s| s["id"].as_str().map(|s| s.to_string()))
-            .collect();
-        for skill in user_skills {
-            if let Some(id) = skill["id"].as_str() {
-                if !builtin_ids.contains(&id.to_string()) {
-                    merged_skills.push(skill.clone());
-                }
-            }
-        }
-    }
-
-    let mut merged = builtin_manifest.clone();
-    merged["skills"] = serde_json::Value::Array(merged_skills);
 
     fs::write(
         &user_manifest_path,
@@ -1461,6 +1571,46 @@ fn read_skill_file(file_name: String) -> Result<String, String> {
     Err(format!("Skill file not found: {}", clean))
 }
 
+/// 写回技能清单（用户文档目录）。前端负责合并内容，后端只做结构校验与落盘。
+#[tauri::command]
+fn write_skills_manifest(manifest: String) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(&manifest)
+        .map_err(|e| format!("Failed to parse skills manifest: {}", e))?;
+    validate_skills_manifest(&value)?;
+    let dir = get_user_skills_dir()?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create user skills dir: {}", e))?;
+    fs::write(
+        dir.join("skills.json"),
+        serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Failed to write skills.json: {}", e))
+}
+
+/// 写入单个技能提示词正文（用户文档目录）。
+#[tauri::command]
+fn write_skill_file(file_name: String, content: String) -> Result<(), String> {
+    let clean = safe_skill_file_name(&file_name)?;
+    let dir = get_user_skills_dir()?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create user skills dir: {}", e))?;
+    fs::write(dir.join(&clean), content)
+        .map_err(|e| format!("Failed to write skill file: {}", e))
+}
+
+/// 删除用户目录中的技能提示词文件；文件已不存在视为成功。
+#[tauri::command]
+fn delete_skill_file(file_name: String) -> Result<(), String> {
+    let clean = safe_skill_file_name(&file_name)?;
+    let dir = get_user_skills_dir()?;
+    let path = dir.join(&clean);
+    if path.is_file() {
+        fs::remove_file(&path)
+            .map_err(|e| format!("Failed to delete skill file: {}", e))?;
+    }
+    Ok(())
+}
+
 /// 获取 skill-guide.md 的完整路径（供前端打开说明文档）
 #[tauri::command]
 fn get_skill_guide_path() -> Result<String, String> {
@@ -1951,15 +2101,77 @@ struct AppState {
 
 /// 解析命令行参数，提取要打开的文件
 fn parse_cli_args() -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
-    // args[0] 是 exe 路径，args[1] 是第一个参数（文件路径）
-    for arg in args.iter().skip(1) {
-        let lower = arg.to_lowercase();
-        if lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt") || lower.ends_with(".epub") {
-            return Some(arg.clone());
-        }
+    std::env::args()
+        .skip(1)
+        .find_map(|arg| cli_arg_to_open_path(&arg))
+}
+
+/// 命令行/文件管理器传入的参数 → 本地文件路径。
+///
+/// 文件管理器大多按 `%F` 传本地路径，但 `%U` 或 `xdg-open` 可能传
+/// `file:///home/me/文档.md` 这类 URI；这里统一解码百分号并去掉 `localhost`。
+/// 以 `-` 开头的参数是应用自己的选项（如 `--no-sandbox`），不当作文件。
+fn cli_arg_to_open_path(arg: &str) -> Option<String> {
+    let trimmed = arg.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return None;
     }
-    None
+
+    #[allow(unused_mut)]
+    let mut path = if let Some(rest) = trimmed.strip_prefix("file://") {
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        percent_decode(rest)
+    } else if trimmed.contains("://") {
+        // http(s) / custom scheme 不是本地文档
+        return None;
+    } else {
+        trimmed.to_string()
+    };
+
+    // Windows 的 file URI 是 file:///C:/...，上面会得到 /C:/...；去掉多余的根斜杠。
+    #[cfg(target_os = "windows")]
+    if path.starts_with('/') && path.as_bytes().get(2) == Some(&b':') {
+        path.remove(0);
+    }
+
+    let lower = path.to_lowercase();
+    if lower.ends_with(".md")
+        || lower.ends_with(".markdown")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".epub")
+    {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// 解码 URI 里的 `%XX`（UTF-8）。非法转义原样保留，避免把一个正常路径改坏。
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                out.push(high << 4 | low);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// 获取启动时通过命令行传入的文件路径
@@ -2425,6 +2637,9 @@ fn main() {
             delete_template,
             list_skills,
             read_skill_file,
+            write_skills_manifest,
+            write_skill_file,
+            delete_skill_file,
             get_skill_guide_path,
             read_keybindings,
             write_keybindings,
@@ -2455,19 +2670,23 @@ fn main() {
             webdav_clear_credentials,
             webdav_test_connection,
             webdav_list,
+            webdav_stat,
+            webdav_read_conditional,
             webdav_open,
             webdav_save,
             webdav_mkdir,
             webdav_delete,
             webdav_move,
+            webdav_sync_cache,
+            webdav_cache_lookup,
             ensure_remote_assets_readme,
         ])
                 .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // 从命令行参数中提取文件路径，通过 eval 直接调用前端全局函数
-            let file_path = args.iter().skip(1).find(|a| {
-                let lower = a.to_lowercase();
-                lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt") || lower.ends_with(".epub")
-            }).cloned();
+            let file_path = args
+                .iter()
+                .skip(1)
+                .find_map(|a| cli_arg_to_open_path(a));
 
             if let Some(path) = file_path {
                 // JSON 序列化路径，自动处理所有特殊字符转义
@@ -2964,5 +3183,146 @@ mod tests {
         );
         let plain = PathBuf::from("/usr/lib/YiziMarkdown");
         assert_eq!(normalize_app_path(plain.clone()), plain);
+    }
+
+    // ---- Skill 清单校验与升级合并 ----
+
+    fn skill(id: &str, file: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": id,
+            "summary": "",
+            "description": "",
+            "file": file,
+            "needsDoc": false
+        })
+    }
+
+    #[test]
+    fn validates_skills_manifest_structure() {
+        let ok = serde_json::json!({
+            "version": 6,
+            "skills": [skill("a", "a.md"), skill("b", "b.md")],
+            "hiddenIds": ["c"]
+        });
+        assert!(validate_skills_manifest(&ok).is_ok());
+
+        let duplicate_id = serde_json::json!({
+            "skills": [skill("a", "a.md"), skill("a", "b.md")]
+        });
+        assert!(validate_skills_manifest(&duplicate_id).unwrap_err().contains("重复"));
+
+        let duplicate_file = serde_json::json!({
+            "skills": [skill("a", "same.md"), skill("b", "same.md")]
+        });
+        assert!(validate_skills_manifest(&duplicate_file).unwrap_err().contains("重复引用"));
+
+        let unsafe_file = serde_json::json!({
+            "skills": [skill("a", "../evil.md")]
+        });
+        assert!(validate_skills_manifest(&unsafe_file).is_err(), "路径穿越必须被拒绝");
+
+        let missing_name = serde_json::json!({
+            "skills": [{ "id": "a", "name": "", "file": "a.md" }]
+        });
+        assert!(validate_skills_manifest(&missing_name).is_err());
+
+        let bad_hidden = serde_json::json!({
+            "skills": [],
+            "hiddenIds": [1]
+        });
+        assert!(validate_skills_manifest(&bad_hidden).is_err());
+    }
+
+    #[test]
+    fn safe_skill_file_name_rejects_traversal_and_non_markdown() {
+        assert_eq!(safe_skill_file_name("a.md").unwrap(), "a.md");
+        assert_eq!(safe_skill_file_name("dir/a.md").unwrap(), "a.md");
+        assert!(safe_skill_file_name("..").is_err());
+        assert!(safe_skill_file_name(".hidden.md").is_err());
+        assert!(safe_skill_file_name("a.txt").is_err());
+        assert!(safe_skill_file_name("").is_err());
+    }
+
+    #[test]
+    fn merge_keeps_user_customized_skill_and_skips_its_file_copy() {
+        let builtin = serde_json::json!({
+            "version": 2,
+            "skills": [skill("builtin", "builtin.md"), skill("plain", "plain.md")]
+        });
+        let mut edited = skill("builtin", "builtin.md");
+        edited["name"] = serde_json::json!("我的版本");
+        edited["customized"] = serde_json::json!(true);
+        let user = serde_json::json!({
+            "version": 1,
+            "skills": [edited],
+            "hiddenIds": []
+        });
+
+        let (merged, copy) = merge_skill_manifests(&builtin, &user);
+        let skills = merged["skills"].as_array().unwrap();
+        assert_eq!(skills.len(), 2, "自定义条目不能重复");
+        let custom = skills.iter().find(|s| s["id"] == "builtin").unwrap();
+        assert_eq!(custom["name"], "我的版本");
+        assert!(!copy.contains(&"builtin.md".to_string()), "自定义技能的正文不能被覆盖");
+        assert!(copy.contains(&"plain.md".to_string()));
+    }
+
+    #[test]
+    fn merge_respects_hidden_ids_and_appends_new_user_skills() {
+        let builtin = serde_json::json!({
+            "version": 2,
+            "skills": [skill("gone", "gone.md"), skill("keep", "keep.md")]
+        });
+        let user = serde_json::json!({
+            "version": 1,
+            "skills": [skill("mine", "mine.md")],
+            "hiddenIds": ["gone"]
+        });
+
+        let (merged, copy) = merge_skill_manifests(&builtin, &user);
+        let skills = merged["skills"].as_array().unwrap();
+        let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"keep"));
+        assert!(ids.contains(&"mine"));
+        assert!(!ids.contains(&"gone"), "被删除的内置技能不能在升级后复活");
+        assert!(!copy.contains(&"gone.md".to_string()));
+        assert_eq!(merged["hiddenIds"], serde_json::json!(["gone"]));
+    }
+
+    #[test]
+    fn cli_open_path_accepts_document_paths_and_skips_options() {
+        assert_eq!(cli_arg_to_open_path("notes.md").as_deref(), Some("notes.md"));
+        assert_eq!(
+            cli_arg_to_open_path("C:\\docs\\book.epub").as_deref(),
+            Some("C:\\docs\\book.epub")
+        );
+        assert_eq!(cli_arg_to_open_path("README.MD").as_deref(), Some("README.MD"));
+        assert_eq!(cli_arg_to_open_path("--no-sandbox"), None);
+        assert_eq!(cli_arg_to_open_path("photo.png"), None);
+        assert_eq!(cli_arg_to_open_path(""), None);
+    }
+
+    #[test]
+    fn cli_open_path_decodes_file_uris() {
+        // 文件管理器用 %U / xdg-open 时可能传 URI，空格与中文都是百分号编码
+        assert_eq!(
+            cli_arg_to_open_path("file:///home/me/%E6%96%87%E6%A1%A3.md").as_deref(),
+            Some("/home/me/文档.md")
+        );
+        assert_eq!(
+            cli_arg_to_open_path("file://localhost/tmp/a%20b.md").as_deref(),
+            Some("/tmp/a b.md")
+        );
+        // 非文件协议不参与文件关联
+        assert_eq!(cli_arg_to_open_path("https://example.com/a.md"), None);
+    }
+
+    #[test]
+    fn percent_decode_keeps_invalid_escapes() {
+        assert_eq!(percent_decode("100%25"), "100%");
+        assert_eq!(percent_decode("%ZZ"), "%ZZ");
+        assert_eq!(percent_decode("%4"), "%4");
     }
 }

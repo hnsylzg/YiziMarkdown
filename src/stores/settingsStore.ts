@@ -12,6 +12,11 @@ import {
   isSlideColAlign, isSlideColStyle, type SlideColAlign, type SlideColStyle,
 } from '../lib/slideColumns.ts'
 import { DEFAULT_READER_ANIM, type ReaderAnim } from '../lib/readerAnimation.ts'
+import {
+  DEFAULT_SELECTION_ACTIONS,
+  normalizeSelectionActions,
+  type SelectionActionConfig,
+} from '../lib/selectionActions.ts'
 
 /** 内容区宽度（正文列 max-width）的取值区间与默认值（px）。
  *  拖拽手柄（components/ContentWidthHandles.tsx）与存档迁移共用同一组边界，避免两处各写一套。 */
@@ -139,6 +144,15 @@ export interface SettingsState {
   webdavLastPath: string
   /** 「保存到云端」对话框上次成功保存到的目录，重新打开时作为默认落点 */
   webdavSaveLastDir: string
+  /** 云端缓存全量镜像（默认关闭）：同步时下载 root 下所有 Markdown 及其引用图片 */
+  webdavMirrorAll: boolean
+  /** 上次缓存同步时间（ISO 字符串，空 = 从未同步） */
+  webdavLastSyncAt: string
+  webdavLastSyncRemoved: number
+  webdavLastSyncDownloaded: number
+  webdavLastSyncUpdated: number
+  webdavLastSyncFailed: number
+  webdavLastSyncTotal: number
 
   // 演示模式（v0.3.1）
   /** 切换动画变体：在演示模式 HUD 里选择，立即持久化 */
@@ -195,11 +209,12 @@ export interface SettingsState {
   pptxIncludeFooter: boolean
   /** 内容超页处理：warn = 照常导出并列出页码；shrink = 自动回缩字号重排 */
   pptxOverflowMode: 'warn' | 'shrink'
-  /** 上次选择的 PPTX 导出范围 */
+  /** PPTX 导出范围：all = 全部；current = 当前页；custom = 自定义起止页 */
   pptxRangeMode: 'all' | 'current' | 'custom'
-  /** 自定义 PPTX 导出的起止页（1 起）；End=0 表示尚未设置，打开面板时落到当前总页数 */
-  pptxCustomStart: number
-  pptxCustomEnd: number
+  /** 自定义范围起始页（1-based） */
+  pptxRangeStart: number
+  /** 自定义范围结束页（1-based）；0 = 未设置，按总页数处理 */
+  pptxRangeEnd: number
 
   // DOCX / Pandoc 导出
   /** Pandoc 使用的 Word reference.docx；空串 = 使用 Pandoc 默认样式 */
@@ -215,6 +230,10 @@ export interface SettingsState {
   // 插件导出弹窗（EPUB 等）
   /** 按 `${pluginId}:${format}` 记住的偏好项（只存 checkbox / select，见 lib/exportOptions.ts） */
   pluginExportOptions: Record<string, Record<string, unknown>>
+
+  // 划词助手（v0.4.4）
+  /** 划词工具栏的功能顺序与自定义显示名；默认见 lib/selectionActions.ts */
+  selectionActions: SelectionActionConfig[]
 
   // AI 面板运行时状态（不持久化）
   /** AI 面板是否打开 */
@@ -294,6 +313,13 @@ export const useSettingsStore = create<SettingsState>()(
       webdavLastPath: '',
       // 空串表示"还没云端保存过"：保存对话框据此回落到浏览器目录
       webdavSaveLastDir: '',
+      webdavMirrorAll: false,
+      webdavLastSyncAt: '',
+      webdavLastSyncRemoved: 0,
+      webdavLastSyncDownloaded: 0,
+      webdavLastSyncUpdated: 0,
+      webdavLastSyncFailed: 0,
+      webdavLastSyncTotal: 0,
 
       // 演示模式（v0.3.1）
       slideAnim: 'cube',
@@ -327,9 +353,10 @@ export const useSettingsStore = create<SettingsState>()(
       pptxIncludeNotes: true,
       pptxIncludeFooter: true,
       pptxOverflowMode: 'warn',
+      // PPTX 导出范围（v0.4.4）：默认全部页；自定义结束页 0 = 按总页数
       pptxRangeMode: 'all',
-      pptxCustomStart: 1,
-      pptxCustomEnd: 0,
+      pptxRangeStart: 1,
+      pptxRangeEnd: 0,
 
       // DOCX / Pandoc 导出
       docxPandocTemplatePath: '',
@@ -340,6 +367,9 @@ export const useSettingsStore = create<SettingsState>()(
 
       // 插件导出弹窗：默认没有任何记住项
       pluginExportOptions: {},
+
+      // 划词助手（v0.4.4）：默认保持旧的 6 个按钮
+      selectionActions: DEFAULT_SELECTION_ACTIONS.map((a) => ({ ...a })),
 
       // AI 面板运行时状态
       aiPanelOpen: false,
@@ -375,9 +405,11 @@ export const useSettingsStore = create<SettingsState>()(
       // v22: 左侧边栏可拖拽调宽 —— 新增 sidebarWidth（默认 260，与改动前一致）
       // v23: 导出弹窗记住勾选 —— 新增 docxThemeColors / docxFollowPreview /
       //      docxFollowPreviewFont / pluginExportOptions（默认空）
-      // v24: 合并固定导出偏好 —— 新增 Word 引擎 / Pandoc 模板 / PPTX 范围；
-      //      将旧版 exportOptionValues 迁移到 pluginExportOptions
-      version: 24,
+      // v24: 划词助手可配置 —— 新增 selectionActions（默认旧版 6 个按钮）
+      // v25: PPTX 导出范围持久化 —— 新增 pptxRangeMode / pptxRangeStart / pptxRangeEnd
+      // v26: 合并 custom 导出偏好 —— Word 引擎 / Pandoc 模板 /
+      //      pluginExportOptions，并迁移旧 exportOptionValues
+      version: 26,
       migrate: (persisted: unknown, persistedVersion: number) => {
         // 自动迁移旧字体栈到 MiSans 方案
         const oldFont = "'DengXian', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif"
@@ -480,6 +512,15 @@ export const useSettingsStore = create<SettingsState>()(
                 : {}
           }
           delete (state as Record<string, unknown>).exportOptionValues
+          // v24：划词助手。存量存档没有该字段 ⇒ 默认旧版 6 个按钮；
+          // 已有配置则清掉非法 / 重复项（空的 [] 是用户主动删空，必须保留）。
+          state.selectionActions = normalizeSelectionActions(state.selectionActions)
+          // v25：PPTX 导出范围。旧存档没有 → 全部页；自定义起止页做整数与边界收敛。
+          if (state.pptxRangeMode !== 'all' && state.pptxRangeMode !== 'current' && state.pptxRangeMode !== 'custom') {
+            state.pptxRangeMode = 'all'
+          }
+          state.pptxRangeStart = Math.trunc(clampNumber(state.pptxRangeStart, 1, 9999, 1))
+          state.pptxRangeEnd = Math.trunc(clampNumber(state.pptxRangeEnd, 0, 9999, 0))
           // v14：PPTX 导出。存量存档没有这四个键 ⇒ 补默认值。
           // 超页策略只认枚举值（手改 localStorage 写入非法值会让分段按钮全灭）。
           if (typeof state.pptxExportHintSeen !== 'boolean') state.pptxExportHintSeen = false
@@ -488,12 +529,6 @@ export const useSettingsStore = create<SettingsState>()(
           if (state.pptxOverflowMode !== 'warn' && state.pptxOverflowMode !== 'shrink') {
             state.pptxOverflowMode = 'warn'
           }
-          // v24：PPTX 导出范围。
-          if (state.pptxRangeMode !== 'all' && state.pptxRangeMode !== 'current' && state.pptxRangeMode !== 'custom') {
-            state.pptxRangeMode = 'all'
-          }
-          state.pptxCustomStart = Math.round(clampNumber(state.pptxCustomStart, 1, 100000, 1))
-          state.pptxCustomEnd = Math.round(clampNumber(state.pptxCustomEnd, 0, 100000, 0))
           // v15：数学公式 / Mermaid 不再是插件；清掉旧存档里的开关与配置。
           // 不影响未来真正的插件（如 epub）；只删除这两个已内置化的 id。
           const enabledPlugins = Array.isArray(state.enabledPlugins)

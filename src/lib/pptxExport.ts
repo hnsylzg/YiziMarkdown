@@ -22,6 +22,7 @@ import { loadSlideshowThemeCss } from './slideTheme.ts'
 import { resolveColAlign, type SlideColAlign, type SlideColStyle } from './slideColumns.ts'
 import { slideTypographyVars, DEFAULT_SLIDE_TYPOGRAPHY, type SlideTypography } from './slideTypography.ts'
 import { invokeTauriOrThrow } from './tauri.ts'
+import { pptxMinFontScale, pptxShrinkFactors } from './pptxCompatibility.ts'
 import type { PptxWarning, SceneNode, SlideScene } from './pptxTypes.ts'
 
 export type PptxOverflowMode = 'warn' | 'shrink'
@@ -62,6 +63,12 @@ export interface PptxExportResult {
   slideCount: number
   /** 内容溢出可视区的页码（1 起，按**整副演示**编号） */
   overflowSlides: number[]
+  /** 未溢出、但内容进入页底预留区的页码（1 起） */
+  tightSlides: number[]
+  /** 降至字号下限后仍无法装下的页码（1 起，超出兼容上限） */
+  redSlides: number[]
+  /** 需要（或在 shrink 模式下已经）自动压缩、且可读的页码（1 起） */
+  yellowSlides: number[]
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -148,34 +155,68 @@ function attachOmml(scenes: SlideScene[], ommlMap: Map<string, string>): void {
 }
 
 /**
- * 让浏览器按缩小后的字号重新排版，直到内容装进当前演示视口。
+ * 是否需要重排：真实溢出，或内容进入页底预留区（PowerPoint 多折一行就可能超）。
+ * 预留值由场景层按正文 / 代码 / 表格的行高计算。
+ */
+function needsFit(scene: SlideScene): boolean {
+  return Math.max(scene.overflowPx, scene.tightPx ?? 0) > 2
+}
+
+/**
+ * 让浏览器按缩小后的字号重新排版，直到内容装进 1920×1080 设计画布。
  *
  * `initial` 必须是**在当前页基础字号下**测出来的场景（调用方已先 setFontScale(1)），
  * 不能是上一页压缩后的残留状态。每次只从更小的档位继续向下试，避免先放大再缩小的
  * 非单调过程。
+ *
+ * 档位最低到 `minScale`（由 14pt 正文下限计算）；到下限仍放不下时返回最后一档，
+ * 由调用方标记为“超出兼容上限”。
  */
 async function shrinkToFit(
   frame: PptxFrame,
   render: () => Promise<void>,
   build: () => SlideScene,
   initial: SlideScene,
+  minScale: number,
   signal?: AbortSignal,
 ): Promise<{ scene: SlideScene; factor: number }> {
-  const factors = [0.94, 0.88, 0.82, 0.76, 0.70, 0.64, 0.6]
+  const factors = pptxShrinkFactors(minScale)
   let last = initial
-  if (last.overflowPx <= 2) return { scene: last, factor: 1 }
+  if (!needsFit(last) || !factors.length) return { scene: last, factor: 1 }
   for (const f of factors) {
     throwIfAborted(signal)
     frame.setFontScale(f)
     await render()
     throwIfAborted(signal)
     last = build()
-    if (last.overflowPx <= 2) return { scene: last, factor: f }
+    if (!needsFit(last)) return { scene: last, factor: f }
   }
   return { scene: last, factor: factors[factors.length - 1] }
 }
 
-export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportResult> {
+export interface PptxMeasureResult {
+  /** 实际测量的页数 */
+  slideCount: number
+  warnings: PptxWarning[]
+  overflowSlides: number[]
+  tightSlides: number[]
+  redSlides: number[]
+  yellowSlides: number[]
+  /** 场景图；导出时可复用，避免重复测量 */
+  scenes: SlideScene[]
+  docTitle: string
+  author?: string
+}
+
+/**
+ * 只做测量、不生成文件：给导出弹窗的「检测版式」使用。
+ * 返回的场景图可以由 `exportPptx(opts, prepared)` 复用。
+ */
+export async function measurePptx(opts: PptxExportOptions): Promise<PptxMeasureResult> {
+  return preparePptx(opts)
+}
+
+async function preparePptx(opts: PptxExportOptions): Promise<PptxMeasureResult> {
   const parsed = parseDeck(opts.content, opts.fallbackTitle || '')
   const allSlides = parsed.slides
   if (!allSlides.length) {
@@ -197,6 +238,9 @@ export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportRes
   const chapters = deckChapters(allSlides, parsed.docTitle)
 
   const typography = opts.typography || {}
+  const baseFontScale = typography.fontScale ?? DEFAULT_SLIDE_TYPOGRAPHY.fontScale
+  // 14pt 正文字号下限 → 最小压缩系数；低于它的页面属于“超出兼容上限”
+  const minScale = pptxMinFontScale(baseFontScale)
   const enabledPlugins = opts.enabledPlugins || []
   const pluginConfigs = opts.pluginConfigs || {}
   const markdownPluginIds = getMarkdownPluginIds(enabledPlugins)
@@ -213,7 +257,7 @@ export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportRes
     typographyVars: slideTypographyVars(typography),
     themeCss,
     docTitle: parsed.docTitle,
-    baseFontScale: typography.fontScale ?? DEFAULT_SLIDE_TYPOGRAPHY.fontScale,
+    baseFontScale: baseFontScale,
     enabledPlugins,
     pluginConfigs,
     docBaseDir: opts.docBaseDir ?? null,
@@ -222,6 +266,9 @@ export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportRes
   const scenes: SlideScene[] = []
   const warnings: PptxWarning[] = []
   const overflowSlides: number[] = []
+  const tightSlides: number[] = []
+  const redSlides: number[] = []
+  const yellowSlides: number[] = []
 
   try {
     for (let k = 0; k < indices.length; k++) {
@@ -265,66 +312,41 @@ export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportRes
       })
 
       let scene = buildScene()
-      if (opts.overflowMode === 'shrink' && scene.overflowPx > 2) {
-        const fitted = await shrinkToFit(frame, render, buildScene, scene, opts.signal)
-        scene = fitted.scene
-        scene.fontScale = fitted.factor
-        if (fitted.factor < 1) {
-          warnings.push({
-            kind: 'shrink',
-            slide: i + 1,
-            messageKey: 'pptxExport.warnShrinkPage',
-            messageArgs: { percent: Math.round(fitted.factor * 100) },
-          })
+      const initialNeeds = needsFit(scene)
+      let factor = 1
+      let canFit = !initialNeeds
+      if (initialNeeds) {
+        const fitted = await shrinkToFit(frame, render, buildScene, scene, minScale, opts.signal)
+        factor = fitted.factor
+        canFit = !needsFit(fitted.scene)
+        if (opts.overflowMode === 'shrink') {
+          scene = fitted.scene
+          scene.fontScale = factor
+          if (factor < 1) {
+            warnings.push({
+              kind: 'shrink',
+              slide: i + 1,
+              messageKey: 'pptxExport.warnShrinkPage',
+              messageArgs: { percent: Math.round(fitted.factor * 100) },
+            })
+          }
+        } else if (factor !== 1) {
+          // warn 模式只做兼容性探测：恢复基础字号，导出仍保持原场景
+          frame.setFontScale(1)
+          await render()
+          scene = buildScene()
         }
       }
+      if (!canFit) redSlides.push(i + 1)
+      else if (initialNeeds) yellowSlides.push(i + 1)
       if (scene.overflowPx > 2) overflowSlides.push(i + 1)
+      else if ((scene.tightPx ?? 0) > 2) tightSlides.push(i + 1)
       scene.warnings.forEach((w) => warnings.push({ ...w, slide: w.slide ?? i + 1 }))
       scenes.push(scene)
       opts.onProgress?.(k + 1, indices.length, 'render')
     }
 
     throwIfAborted(opts.signal)
-
-    // ---- 公式：TeX → OMML（Rust 复用 DOCX 的同一套解析器） ----
-    const mathItems = collectMath(scenes)
-    if (mathItems.length) {
-      opts.onProgress?.(indices.length, indices.length, 'math')
-      const ommlMap = new Map<string, string>()
-      await Promise.all(mathItems.map(async (item) => {
-        throwIfAborted(opts.signal)
-        try {
-          const omml = await invokeTauriOrThrow<string>('latex_to_omml', { tex: item.tex })
-          if (omml) ommlMap.set(item.tex, omml)
-          else item.slides.forEach((s) => warnings.push({
-            kind: 'math',
-            slide: s,
-            messageKey: 'pptxExport.warnMathFallback',
-            messageArgs: { tex: item.tex },
-          }))
-        } catch (e) {
-          item.slides.forEach((s) => warnings.push({
-            kind: 'math',
-            slide: s,
-            messageKey: 'pptxExport.warnMathError',
-            messageArgs: { error: (e as Error).message?.slice(0, 80), tex: item.tex },
-          }))
-        }
-      }))
-      attachOmml(scenes, ommlMap)
-    }
-
-    throwIfAborted(opts.signal)
-    opts.onProgress?.(indices.length, indices.length, 'build')
-    const buffer = await buildPptx({
-      title: parsed.docTitle || 'YiziMarkdown',
-      author: parsed.meta.author,
-      subject: parsed.docTitle || undefined,
-      scenes,
-      includeNotes: opts.includeNotes,
-      includeFooter: opts.includeFooter,
-      onProgress: (done, total) => opts.onProgress?.(done, total, 'build'),
-    })
 
     if (overflowSlides.length) {
       warnings.push({
@@ -335,12 +357,76 @@ export async function exportPptx(opts: PptxExportOptions): Promise<PptxExportRes
     }
 
     return {
-      buffer,
-      warnings: dedupeWarnings(warnings),
       slideCount: scenes.length,
+      warnings: dedupeWarnings(warnings),
       overflowSlides,
+      tightSlides,
+      redSlides,
+      yellowSlides,
+      scenes,
+      docTitle: parsed.docTitle,
+      author: parsed.meta.author,
     }
   } finally {
     frame.destroy()
+  }
+}
+
+export async function exportPptx(
+  opts: PptxExportOptions,
+  prepared?: PptxMeasureResult,
+): Promise<PptxExportResult> {
+  const data = prepared ?? await preparePptx(opts)
+  const scenes = data.scenes
+  const warnings: PptxWarning[] = [...data.warnings]
+
+  // ---- 公式：TeX → OMML（Rust 复用 DOCX 的同一套解析器） ----
+  const mathItems = collectMath(scenes)
+  if (mathItems.length) {
+    opts.onProgress?.(scenes.length, scenes.length, 'math')
+    const ommlMap = new Map<string, string>()
+    await Promise.all(mathItems.map(async (item) => {
+      throwIfAborted(opts.signal)
+      try {
+        const omml = await invokeTauriOrThrow<string>('latex_to_omml', { tex: item.tex })
+        if (omml) ommlMap.set(item.tex, omml)
+        else item.slides.forEach((s) => warnings.push({
+          kind: 'math',
+          slide: s,
+          messageKey: 'pptxExport.warnMathFallback',
+          messageArgs: { tex: item.tex },
+        }))
+      } catch (e) {
+        item.slides.forEach((s) => warnings.push({
+          kind: 'math',
+          slide: s,
+          messageKey: 'pptxExport.warnMathError',
+          messageArgs: { error: (e as Error).message?.slice(0, 80), tex: item.tex },
+        }))
+      }
+    }))
+    attachOmml(scenes, ommlMap)
+  }
+
+  throwIfAborted(opts.signal)
+  opts.onProgress?.(scenes.length, scenes.length, 'build')
+  const buffer = await buildPptx({
+    title: data.docTitle || 'YiziMarkdown',
+    author: data.author,
+    subject: data.docTitle || undefined,
+    scenes,
+    includeNotes: opts.includeNotes,
+    includeFooter: opts.includeFooter,
+    onProgress: (done, total) => opts.onProgress?.(done, total, 'build'),
+  })
+
+  return {
+    buffer,
+    warnings: dedupeWarnings(warnings),
+    slideCount: scenes.length,
+    overflowSlides: data.overflowSlides,
+    tightSlides: data.tightSlides,
+    redSlides: data.redSlides,
+    yellowSlides: data.yellowSlides,
   }
 }

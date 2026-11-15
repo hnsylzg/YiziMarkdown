@@ -359,7 +359,7 @@ export interface SlideLayout {
   kind: SlideKind
   /** 页内第一个标题的纯文本（供章节标记 / 封面展示） */
   title?: string
-  /** 页内第一个真实 Markdown 标题的级别（1–6） */
+  /** 页内第一个标题的级别（1 = H1，2 = H2…）；目录层级直接用它 */
   titleLevel?: number
 }
 
@@ -447,25 +447,34 @@ export function scanBlocks(src: string): BlockInfo[] {
   return blocks
 }
 
-/** 从页内第一个真实 Markdown 标题提取文本与级别，跳过代码围栏内的注释。 */
-export function extractTitleInfo(src: string): { text: string; level: number } | undefined {
+/** 页内是否存在代码围栏外的 `[toc]` 占位。 */
+export function hasTocPlaceholder(src: string): boolean {
   const lines = src.split(/\r?\n/)
   const inFence = fenceMask(lines)
-  const line = lines.find((l, i) => !inFence[i] && /^#{1,6}\s/.test(l.trim()))
-  if (!line) return undefined
-  const trimmed = line.trim()
-  const level = /^#{1,6}/.exec(trimmed)?.[0].length ?? 1
-  const text = trimmed
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/[*_`~]/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .trim()
-  return { text, level }
+  return lines.some((line, i) => !inFence[i] && /^\s*\[{1,2}toc\]{1,2}\s*$/.test(line))
 }
 
-/** 从页内第一个真实 Markdown 标题提取纯文本（去掉 markdown 标记）。 */
+/** 从页内第一个**代码围栏外**的标题行提取纯文本与级别。 */
+export function extractHeading(src: string): { text: string; level: number } | undefined {
+  const lines = src.split(/\r?\n/)
+  const inFence = fenceMask(lines)
+  for (let i = 0; i < lines.length; i++) {
+    if (inFence[i]) continue
+    const line = lines[i].trim()
+    const match = /^(#{1,6})\s+(.*)$/.exec(line)
+    if (!match) continue
+    const text = match[2]
+      .replace(/[*_`~]/g, '')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .trim()
+    return { text, level: match[1].length }
+  }
+  return undefined
+}
+
+/** 从页内第一个代码围栏外的标题行提取纯文本（去掉 markdown 标记） */
 export function extractTitle(src: string): string | undefined {
-  return extractTitleInfo(src)?.text
+  return extractHeading(src)?.text
 }
 
 /** 版式规则上下文 */
@@ -614,11 +623,11 @@ export const LAYOUT_RULES: LayoutRule[] = [
 export function detectLayout(src: string): SlideLayout {
   const blocks = scanBlocks(src)
   if (!blocks.length) return { kind: 'content' }
-  const titleInfo = extractTitleInfo(src)
-  const title = titleInfo?.text || ''
+  const heading = extractHeading(src)
+  const title = heading?.text || ''
   const ctx: LayoutContext = { blocks, title: title.toLowerCase() }
   const rule = LAYOUT_RULES.find((r) => r.match(ctx))
-  return { kind: rule!.kind, title: title || undefined, titleLevel: titleInfo?.level }
+  return { kind: rule!.kind, title: title || undefined, titleLevel: heading?.level }
 }
 
 /** 兼容旧接口：仅返回版式名 */

@@ -11,8 +11,10 @@ import assert from 'node:assert/strict'
 import {
   stripFrontMatter, parseFrontMatter, splitSlides, splitColumns, extractNotes, extractDirectives,
   scanBlocks, detectLayout, detectSlideKind, isValidLayout, LAYOUT_KINDS,
+  extractHeading, extractTitle, hasTocPlaceholder,
   COLUMN_BREAK, MAX_COLUMNS, COLUMN_REGION_MIN, COLUMN_REGION_SNIPPET, COLUMN_REGION_CURSOR,
 } from '../src/lib/slides.ts'
+import { parseDeck, buildDeckTocHtml } from '../src/lib/slideDeck.ts'
 
 // ---------- splitSlides ----------
 
@@ -297,15 +299,28 @@ test('detectLayout: title 提取（供章节标记）', () => {
   assert.equal(detectLayout('## 第一章 **重点**').title, '第一章 重点')
 })
 
-test('detectLayout: 代码围栏中的注释不会被误判为 Markdown 标题', () => {
-  const src = '**Code Block:**\n\n```python\n#  Notin Style Theme - Sample Code\ndef hello():\n    pass\n```\n'
-  assert.equal(detectLayout(src).title, undefined)
+test('extractHeading: 跳过代码围栏内的 # 注释', () => {
+  const src = '```bash\n# install\nnpm install\n```\n\n## 真实标题'
+  assert.deepEqual(extractHeading(src), { text: '真实标题', level: 2 })
+  assert.equal(detectLayout(src).title, '真实标题')
+  assert.equal(detectLayout(src).titleLevel, 2)
+  // 只有代码块、没有真实标题时，不应凭空生成标题
+  assert.equal(extractTitle('```js\n# not heading\n```'), undefined)
+  assert.equal(detectLayout('```js\n# not heading\n```').title, undefined)
 })
 
-test('detectLayout: 跳过代码围栏后仍能识别真实标题和级别', () => {
-  const src = '~~~md\n# fake heading\n~~~\n\n## Real Heading'
-  assert.equal(detectLayout(src).title, 'Real Heading')
-  assert.equal(detectLayout(src).titleLevel, 2)
+test('[toc] 占位检测跳过代码围栏', () => {
+  assert.equal(hasTocPlaceholder('```md\n[toc]\n```'), false)
+  assert.equal(hasTocPlaceholder('正文\n\n[toc]\n'), true)
+})
+
+test('目录层级使用页内真实标题级别，不受代码块注释影响', () => {
+  const deck = parseDeck('## 真实章节\n\n```bash\n### 这不是标题\n# 注释\n```\n')
+  const html = buildDeckTocHtml(deck.slides)
+  assert.match(html, /真实章节/)
+  assert.doesNotMatch(html, /这不是标题/)
+  assert.doesNotMatch(html, /注释/)
+  assert.equal(deck.slides[0].titleLevel, 2)
 })
 
 // ---------- splitColumns（页内 `***` 分栏） ----------

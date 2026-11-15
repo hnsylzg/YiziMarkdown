@@ -95,12 +95,97 @@ export function measureSceneOverflow(
   }
 }
 
+/**
+ * PowerPoint 折行余量：正文/代码/表格一行的高度，限制在 0.3~0.5in。
+ *
+ * 导出测量发生在浏览器里，PowerPoint 的字体度量不同，可能把某一行拆成两行。
+ * 页底预留一行高度，让“多折一行”不至于直接把内容顶出幻灯片。
+ * 纯图形页（没有正文/代码/表格）不预留。
+ */
+const MIN_RESERVE_IN = 0.3
+const MAX_RESERVE_IN = 0.5
+
+export function sceneReserveIn(nodes: SceneNode[]): number {
+  let maxLinePt = 0
+  for (const n of nodes) {
+    if (n.t === 'text' && (n.decorative || n.footer)) continue
+    if (n.t === 'text' && !n.decorative) {
+      if (Number.isFinite(n.lineSpacingPt)) maxLinePt = Math.max(maxLinePt, n.lineSpacingPt)
+    } else if (n.t === 'code') {
+      if (Number.isFinite(n.lineSpacingPt)) maxLinePt = Math.max(maxLinePt, n.lineSpacingPt)
+    } else if (n.t === 'table') {
+      for (const row of n.rows) {
+        for (const cell of row) {
+          if (Number.isFinite(cell.sizePt)) maxLinePt = Math.max(maxLinePt, cell.sizePt * 1.25)
+        }
+      }
+    }
+  }
+  if (maxLinePt <= 0) return 0
+  return round3(Math.min(MAX_RESERVE_IN, Math.max(MIN_RESERVE_IN, maxLinePt / 72)))
+}
+
+/**
+ * 内容底部进入预留区的像素数（0 = 距页底仍有足够余量）。
+ * 与 `measureSceneOverflow` 的 bottom 不同：这里把“预留的一行”也算进去。
+ */
+export function measureSceneTightPx(
+  nodes: SceneNode[],
+  slideHIn: number,
+  reserveIn: number,
+): number {
+  if (!(reserveIn > 0)) return 0
+  let maxY = -Infinity
+  for (const n of nodes) {
+    if (n.t !== 'text' && n.t !== 'code' && n.t !== 'table') continue
+    if (n.t === 'text' && (n.decorative || n.footer)) continue
+    const y2 = n.y + n.h
+    if (!Number.isFinite(y2)) continue
+    maxY = Math.max(maxY, y2)
+  }
+  if (!Number.isFinite(maxY)) return 0
+  return Math.round(Math.max(0, maxY + reserveIn - slideHIn) * SLIDE_CANVAS_PX_PER_IN)
+}
+
 /** 判断两个普通文本 run 样式是否完全一致；公式 run 永远不能参与文本合并。 */
 export function canMergeRunStyles(a: SceneRunStyle, b: SceneRunStyle): boolean {
   return a.color === b.color && a.sizePt === b.sizePt && a.bold === b.bold &&
     a.italic === b.italic && a.underline === b.underline && a.strike === b.strike &&
     a.latin === b.latin && a.ea === b.ea && a.charSpacingPt === b.charSpacingPt &&
     a.highlight === b.highlight && a.link === b.link && !a.mathTex && !b.mathTex
+}
+
+/**
+ * 代码行按可用宽度折行（按字符，不依赖空格）。
+ *
+ * PowerPoint 没有“元素内部横向滚动条”，长代码行只能折行。这里在场景层
+ * 直接切成多行，避免依赖 PowerPoint 的断词规则（长串下划线/路径通常不会断）。
+ */
+export function wrapCodeRuns(
+  line: SceneRun[],
+  availPx: number,
+  measure: (ch: string) => number,
+): SceneRun[][] {
+  const out: SceneRun[][] = []
+  let current: SceneRun[] = []
+  let width = 0
+  const flush = () => {
+    if (current.length) out.push(current)
+    current = []
+    width = 0
+  }
+  for (const run of line) {
+    for (const ch of run.text) {
+      const w = measure(ch)
+      if (current.length && width + w > availPx) flush()
+      const prev = current[current.length - 1]
+      if (prev && canMergeRunStyles(prev.style, run.style)) prev.text += ch
+      else current.push({ text: ch, style: run.style })
+      width += w
+    }
+  }
+  flush()
+  return out.length ? out : [line]
 }
 
 /** `annotation[encoding="application/x-tex"]` → TeX；KaTeX 的可见 HTML 不可信，必须取源。 */
@@ -489,6 +574,7 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
       noWrap?: boolean
       bg?: string
       visualLines?: SceneRun[][]
+      footer?: boolean
     },
   ) => {
     if (!paragraphs.length) return
@@ -510,6 +596,7 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
       ea: font.ea,
       visualLines: opt?.visualLines,
       decorative: opt?.decorative || undefined,
+      footer: opt?.footer || undefined,
       noWrap: opt?.noWrap || undefined,
     }
     nodes.push(node)
@@ -638,15 +725,43 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
       if (!line.length) line.push({ text: ' ', style: trimRun(runStyleOf(code, slideBg)) })
     })
 
-    const naturalW = Math.max(box.w, code.scrollWidth, pre.scrollWidth - (r.w - box.w))
-    const scale = naturalW > box.w + 1 ? Math.max(0.6, Math.min(1, box.w / naturalW)) : 1
-    if (scale < 0.999) {
-      warnings.push({
-        kind: 'shrink',
-        messageKey: 'pptxExport.warnCodeShrink',
-        messageArgs: { percent: Math.round(scale * 100) },
-      })
+    const fontPx = fontSizePx(codeCS)
+    const linePx = lineHeightPx(codeCS)
+    let measureChar: (ch: string) => number
+    try {
+      const ctx = win.document.createElement('canvas').getContext('2d')
+      if (ctx) {
+        ctx.font = `${fontPx}px ${codeCS.fontFamily}`
+        const probe = ctx.measureText('M').width
+        const fontOk = probe > fontPx * 0.2 && probe < fontPx * 1.6
+        const fallback = (ch: string) => {
+          const cp = ch.codePointAt(0) ?? 0
+          return cp >= 0x2e80 ? fontPx : fontPx * 0.6
+        }
+        const cache = new Map<string, number>()
+        measureChar = (ch) => {
+          if (!fontOk) return fallback(ch)
+          let w = cache.get(ch)
+          if (w === undefined) {
+            w = ctx.measureText(ch).width
+            if (!(w > 0) || w > fontPx * 2) w = fallback(ch)
+            cache.set(ch, w)
+          }
+          return w
+        }
+      } else {
+        measureChar = (_ch) => fontPx * 0.6
+      }
+    } catch {
+      measureChar = (_ch) => fontPx * 0.6
     }
+
+    // PowerPoint 没有元素内部横向滚动条：长代码行按内容盒宽度折行，
+    // 并同步放大代码块高度（后续内容可能因此进入页底预留区 / 红区）。
+    const availPx = Math.max(1, box.w - 8)
+    const wrappedLines = lines.flatMap((line) => wrapCodeRuns(line, availPx, measureChar))
+    const extraPx = Math.max(0, wrappedLines.length - lines.length) * linePx
+    // 不再横向缩小代码：缩到 60% 仍放不下的长行改为折行，避免导出后横向溢出。
 
     const font = resolveFontStack(codeCS.fontFamily)
     // 背景/边框按**边框盒**（含 pre 的内边距）单独画，文本仍按内容盒排 ——
@@ -657,7 +772,7 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
     if (fill || linePt) {
       nodes.push({
         t: 'rect',
-        x: toIn(r.x), y: toIn(r.y), w: toIn(r.w), h: toIn(r.h),
+        x: toIn(r.x), y: toIn(r.y), w: toIn(r.w), h: toIn(r.h + extraPx),
         fill,
         lineColor: linePt ? flattenColor(cs.borderTopColor, slideBg) : undefined,
         linePt,
@@ -666,13 +781,13 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
     }
     nodes.push({
       t: 'code',
-      x: toIn(box.x), y: toIn(box.y), w: toIn(box.w), h: toIn(box.h),
-      lines,
+      x: toIn(box.x), y: toIn(box.y), w: toIn(box.w), h: toIn(box.h + extraPx),
+      lines: wrappedLines,
       sizePt: toPt(fontSizePx(codeCS)),
       lineSpacingPt: toPt(lineHeightPx(codeCS)),
       latin: font.latin,
       ea: font.ea,
-      scale,
+      scale: 1,
     })
   }
 
@@ -1120,7 +1235,7 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
         // 页脚是 `position:fixed` + flex 的收缩宽度：DOM 里刚好一行，但 PowerPoint
         // 的字体度量（尤其 CJK 的 em 宽度）会把 `3 / 9` 折到下一行 —— 直接禁掉换行。
         const box: Box = { x: rectOf(footer).x, y: rectOf(footer).y, w: rectOf(footer).w, h: rectOf(footer).h + EPS }
-        pushText(box, [{ runs }], fcs, { align: 'left', noWrap: true })
+        pushText(box, [{ runs }], fcs, { align: 'left', noWrap: true, footer: true })
       }
     }
   }
@@ -1133,6 +1248,10 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
     SLIDE_H_IN,
   )
   const overflowPx = Math.max(overflow.top, overflow.right, overflow.bottom, overflow.left)
+  // 为 PowerPoint 字体度量差异多折的一行预留底部空间；进入预留区只算“接近页底”，
+  // 仍由导出层决定告警 / 压缩，避免在场景层重复改字号。
+  const reserveIn = sceneReserveIn(nodes)
+  const tightPx = measureSceneTightPx(nodes, SLIDE_H_IN, reserveIn)
   if (overflowPx > EPS) {
     warnings.push({
       kind: 'overflow',
@@ -1150,6 +1269,8 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
     notes: opts.notes,
     nodes,
     overflowPx,
+    reserveIn,
+    tightPx,
     overflow,
     warnings,
     fontScale: 1,

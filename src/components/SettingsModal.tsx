@@ -1,6 +1,5 @@
 import { invokeTauri, invokeTauriOrThrow } from '../lib/tauri'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { X, Loader2, ChevronRight, FolderOpen, Palette, FileText, Keyboard, Settings2, Eye, EyeOff, Info, Github, History, BookOpen, ExternalLink, Zap, Globe, Puzzle, Bot, Cloud, Boxes, Download, RefreshCw, Presentation, Layers, Sparkles, Plus, HelpCircle } from 'lucide-react'
 import {
   useSettingsStore,
   UI_TEXT_SCALE_DEFAULT,
@@ -11,6 +10,7 @@ import {
   DEFAULT_EDITOR_FONT_SIZE,
   DEFAULT_EDITOR_LINE_HEIGHT,
 } from '../stores/settingsStore'
+import { X, Loader2, ChevronRight, FolderOpen, Palette, FileText, Keyboard, Settings2, Eye, EyeOff, Info, Github, History, BookOpen, ExternalLink, Zap, Globe, Puzzle, Bot, Cloud, Boxes, Download, RefreshCw, Presentation, Layers, Sparkles, Plus, HelpCircle, TextCursorInput, ArrowUp, ArrowDown, Trash2, Copy, ClipboardPaste, MessageSquarePlus, Check, Pencil } from 'lucide-react'
 import { useUpdateStore } from '../stores/updateStore'
 import type { UpdateBlocker } from '../lib/updateClient'
 import { isManualUpdateChannel } from '../lib/updateClient'
@@ -30,6 +30,7 @@ import {
   clearCredentials,
   testConnection,
 } from '../lib/webdav'
+import { runCloudCacheSync } from '../lib/webdavSync'
 import { normalizeBaseUrl } from '../lib/remotePath'
 import { liveAnimPreviewCss } from '../lib/liveAnimKeyframes'
 import { DEFAULT_THEME } from '../lib/themeOrder'
@@ -37,6 +38,39 @@ import { CUSTOM_THEME, applyThemeStyles, readUserCss } from '../lib/themeLoader'
 import { sanitizeUserCss } from '../lib/userCss'
 import { loadThemeCatalog, type ThemeEntry } from '../lib/themeCatalog'
 import { buildThemePreviewCss } from '../lib/themePreview'
+import MarkdownEditPreview from './MarkdownEditPreview'
+import SkillIcon from './SkillIcon'
+import SelectionToolbarView from './SelectionToolbarView'
+import { SKILL_ICON_NAMES, DEFAULT_SKILL_ICON, resolveSkillIcon } from '../lib/skillIconNames'
+import {
+  parseSkillManifest,
+  validateSkillDraft,
+  planSkillSave,
+  planSkillDelete,
+  type Skill,
+  type SkillDraft,
+  type SkillManifest,
+  type SkillValidationError,
+} from '../lib/skillsManifest'
+import {
+  loadSkillManifestRaw,
+  readSkillContent,
+  writeSkillFile,
+  deleteSkillFile,
+  writeSkillManifest,
+  notifySkillsChanged,
+  SKILLS_CHANGED_EVENT,
+} from '../lib/skillsAdmin'
+import { loadSkills, type Skill as AiSkill } from '../lib/ai-skills'
+import {
+  DEFAULT_SELECTION_ACTIONS,
+  buildSelectionToolbarItems,
+  createSelectionActionId,
+  hasSelectionAction,
+  moveSelectionAction,
+  type SelectionActionConfig,
+  type SelectionSystemAction,
+} from '../lib/selectionActions'
 
 const fallbackFonts = [
   'Consolas', 'Courier New', 'Lucida Console', 'Monaco', 'Menlo',
@@ -76,7 +110,7 @@ interface SettingsModalProps {
   defaultTab?: CategoryKey
 }
 
-type CategoryKey = 'general' | 'appearance' | 'editor' | 'liveMode' | 'ai' | 'cloud' | 'plugins' | 'shortcuts' | 'templates' | 'docs' | 'about' | 'products'
+type CategoryKey = 'general' | 'appearance' | 'editor' | 'liveMode' | 'ai' | 'skills' | 'selection' | 'cloud' | 'plugins' | 'shortcuts' | 'templates' | 'docs' | 'about' | 'products'
 
 const categories: Array<{ key: CategoryKey; labelKey: string; icon: React.ReactNode }> = [
   { key: 'general', labelKey: 'settings.general', icon: <Settings2 size={16} /> },
@@ -84,6 +118,8 @@ const categories: Array<{ key: CategoryKey; labelKey: string; icon: React.ReactN
   { key: 'editor', labelKey: 'settings.editor', icon: <FileText size={16} /> },
   { key: 'liveMode', labelKey: 'settings.liveMode', icon: <Zap size={16} /> },
   { key: 'ai', labelKey: 'settings.ai', icon: <Bot size={16} /> },
+  { key: 'skills', labelKey: 'settings.skills', icon: <Sparkles size={16} /> },
+  { key: 'selection', labelKey: 'settings.selectionAssistant', icon: <TextCursorInput size={16} /> },
   { key: 'cloud', labelKey: 'settings.cloud', icon: <Cloud size={16} /> },
   { key: 'plugins', labelKey: 'settings.plugins', icon: <Puzzle size={16} /> },
   { key: 'shortcuts', labelKey: 'settings.shortcuts', icon: <Keyboard size={16} /> },
@@ -1356,7 +1392,7 @@ function TemplatesSettings() {
           {editing ? (
             <div className="space-y-2">
               <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} className="settings-input" placeholder={t('settings.templateName')} />
-              <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="settings-textarea font-mono" rows={10} />
+              <MarkdownEditPreview value={editContent} onChange={setEditContent} minHeight={240} />
               <div className="flex gap-2">
                 <button onClick={handleSave} className="settings-btn-primary">{t('common.save')}</button>
                 <button onClick={() => setEditing(false)} className="settings-btn-secondary">{t('common.cancel')}</button>
@@ -1379,7 +1415,7 @@ function TemplatesSettings() {
                     <button onClick={openDelete} className="text-[0.6875rem] text-red-500 hover:underline px-2 py-1">{t('settings.deleteTemplate')}</button>
                   </div>
                 )}
-                {selected ? <textarea value={tContent} readOnly className="settings-textarea font-mono opacity-80" rows={12} />
+                {selected ? <MarkdownEditPreview value={tContent} readOnly minHeight={240} />
                   : <div className="flex items-center justify-center h-36 text-xs text-[var(--sidebar-text)] border border-[var(--editor-border)] rounded-lg bg-[var(--editor-surface)]">{t('settings.selectToPreview')}</div>}
                 {selected && deleteOpen && (
                   <div
@@ -1407,6 +1443,617 @@ function TemplatesSettings() {
             </div>
           )}
         </Section>
+      </div>
+    </div>
+  )
+}
+
+// ===================== Skill 管理 =====================
+
+function SkillsSettings() {
+  const { t } = useI18n()
+  const [manifest, setManifest] = useState<SkillManifest | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [content, setContent] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState<SkillDraft>({
+    id: '', name: '', summary: '', description: '', needsDoc: false, icon: DEFAULT_SKILL_ICON,
+  })
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    loadSkillManifestRaw()
+      .then((raw) => { if (alive) setManifest(parseSkillManifest(raw)) })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : String(e)) })
+    return () => { alive = false }
+  }, [])
+
+  const selected = manifest?.skills.find((s) => s.id === selectedId) ?? null
+
+  const errorText = (code: SkillValidationError | string): string => {
+    switch (code) {
+      case 'name-required': return t('settings.skillNameRequired')
+      case 'id-required': return t('settings.skillIdRequired')
+      case 'id-invalid': return t('settings.skillIdInvalid')
+      case 'id-duplicate': return t('settings.skillIdDuplicate')
+      case 'file-collision': return t('settings.skillFileCollision')
+      default: return code
+    }
+  }
+
+  const selectSkill = async (skill: Skill) => {
+    setSelectedId(skill.id)
+    setEditing(false)
+    setEditingId(null)
+    setDeleteOpen(false)
+    setError(null)
+    try {
+      setContent(await readSkillContent(skill.file))
+    } catch (e) {
+      setContent('')
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const beginNew = () => {
+    setEditing(true)
+    setEditingId(null)
+    setSelectedId(null)
+    setContent('')
+    setDraft({ id: '', name: '', summary: '', description: '', needsDoc: false, icon: DEFAULT_SKILL_ICON })
+    setError(null)
+    setDeleteOpen(false)
+  }
+
+  const beginEdit = () => {
+    if (!selected) return
+    setEditing(true)
+    setEditingId(selected.id)
+    setDraft({
+      id: selected.id,
+      name: selected.name,
+      summary: selected.summary,
+      description: selected.description,
+      needsDoc: selected.needsDoc === true,
+      icon: resolveSkillIcon(selected),
+    })
+    setError(null)
+    setDeleteOpen(false)
+  }
+
+  const handleSave = async () => {
+    if (!manifest || busy) return
+    const validation = validateSkillDraft(draft, manifest.skills, editingId)
+    if (validation) {
+      setError(errorText(validation))
+      return
+    }
+    const plan = planSkillSave(manifest, draft, content, editingId)
+    setBusy(true)
+    setError(null)
+    try {
+      // 先写正文，再写清单：即使第二步失败，也只是多一个无引用文件，不会出现指向空文件的条目
+      await writeSkillFile(plan.file, plan.content)
+      await writeSkillManifest(plan.manifest)
+      if (plan.deleteFile && plan.deleteFile !== plan.file) {
+        await deleteSkillFile(plan.deleteFile).catch((e) => {
+          console.error('[skills] delete old file failed:', e)
+        })
+      }
+      setManifest(plan.manifest)
+      setSelectedId(draft.id.trim())
+      setEditing(false)
+      setEditingId(null)
+      notifySkillsChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+    setBusy(false)
+  }
+
+  const handleDelete = async () => {
+    if (!manifest || !selectedId || deleteBusy) return
+    const plan = planSkillDelete(manifest, selectedId)
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      await writeSkillManifest(plan.manifest)
+      if (plan.deleteFile) {
+        await deleteSkillFile(plan.deleteFile).catch((e) => {
+          console.error('[skills] delete file failed:', e)
+        })
+      }
+      setManifest(plan.manifest)
+      setSelectedId(null)
+      setContent('')
+      setEditing(false)
+      setEditingId(null)
+      setDeleteOpen(false)
+      notifySkillsChanged()
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e))
+    }
+    setDeleteBusy(false)
+  }
+
+  return (
+    <div className="settings-content-scroll">
+      <div className="space-y-4">
+        <Section title={t('settings.skills')}>
+          <div className="flex items-center justify-between pb-2">
+            <p className="text-[0.6875rem] text-[var(--sidebar-text)]">{t('settings.skillHint')}</p>
+            <button onClick={beginNew} className="text-[0.6875rem] text-[var(--editor-accent)] hover:underline">
+              {t('settings.newSkill')}
+            </button>
+          </div>
+
+          {editing ? (
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[0.6875rem] text-[var(--sidebar-text)] mb-1">{t('settings.skillName')}</label>
+                  <input
+                    type="text"
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    className="settings-input"
+                    placeholder={t('settings.skillName')}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[0.6875rem] text-[var(--sidebar-text)] mb-1">{t('settings.skillId')}</label>
+                  <input
+                    type="text"
+                    value={draft.id}
+                    onChange={(e) => setDraft({ ...draft, id: e.target.value })}
+                    className="settings-input font-mono"
+                    placeholder="e.g. doc-summary"
+                  />
+                </div>
+              </div>
+              <p className="text-[0.6875rem] text-[var(--sidebar-text)]">{t('settings.skillIdHint')}</p>
+              <div>
+                <label className="block text-[0.6875rem] text-[var(--sidebar-text)] mb-1">{t('settings.skillIcon')}</label>
+                <div className="grid grid-cols-8 gap-1">
+                  {SKILL_ICON_NAMES.map((name) => {
+                    const active = (draft.icon ?? DEFAULT_SKILL_ICON) === name
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        title={name}
+                        aria-pressed={active}
+                        onClick={() => setDraft({ ...draft, icon: name })}
+                        className={`flex items-center justify-center h-7 rounded border transition-colors ${
+                          active
+                            ? 'border-[var(--editor-accent)] text-[var(--editor-accent)] bg-[var(--editor-accent)]/10'
+                            : 'border-[var(--editor-border)] text-[var(--sidebar-text)] hover:bg-[var(--editor-hover)] hover:text-[var(--editor-text)]'
+                        }`}
+                      >
+                        <SkillIcon name={name} size={14} />
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div>
+                <label className="block text-[0.6875rem] text-[var(--sidebar-text)] mb-1">{t('settings.skillSummary')}</label>
+                <input
+                  type="text"
+                  value={draft.summary}
+                  onChange={(e) => setDraft({ ...draft, summary: e.target.value })}
+                  className="settings-input"
+                />
+              </div>
+              <div>
+                <label className="block text-[0.6875rem] text-[var(--sidebar-text)] mb-1">{t('settings.skillDescription')}</label>
+                <textarea
+                  value={draft.description}
+                  onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                  className="settings-textarea"
+                  rows={2}
+                />
+              </div>
+              <label className="flex items-center gap-2 text-[0.75rem] text-[var(--editor-text)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={draft.needsDoc}
+                  onChange={(e) => setDraft({ ...draft, needsDoc: e.target.checked })}
+                  className="settings-checkbox"
+                />
+                {t('settings.skillNeedsDoc')}
+              </label>
+
+              <div>
+                <label className="block text-[0.6875rem] text-[var(--sidebar-text)] mb-1">{t('settings.skillContent')}</label>
+                <MarkdownEditPreview
+                  value={content}
+                  onChange={setContent}
+                  placeholder={t('settings.skillContentPlaceholder')}
+                  minHeight={260}
+                />
+              </div>
+
+              {error && <p className="text-[0.6875rem] text-red-500 break-words">{error}</p>}
+              <div className="flex gap-2">
+                <button onClick={handleSave} disabled={busy} className="settings-btn-primary" style={busy ? { opacity: 0.5 } : undefined}>
+                  {t('common.save')}
+                </button>
+                <button
+                  onClick={() => { setEditing(false); setEditingId(null); setError(null) }}
+                  disabled={busy}
+                  className="settings-btn-secondary"
+                >
+                  {t('common.cancel')}
+                </button>
+                {editingId && <span className="ml-auto text-[0.6875rem] text-[var(--sidebar-text)] font-mono self-center">{editingId}</span>}
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-3">
+              <div className="w-56 border border-[var(--editor-border)] rounded-lg overflow-hidden bg-[var(--editor-surface)]" style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                {(manifest?.skills ?? []).map((skill) => (
+                  <button
+                    key={skill.id}
+                    onClick={() => selectSkill(skill)}
+                    className={`w-full px-2.5 py-1.5 text-left hover:bg-[var(--editor-hover)] flex flex-col gap-0.5 ${selectedId === skill.id ? 'bg-[var(--editor-accent)] text-white' : 'text-[var(--editor-text)]'}`}
+                  >
+                    <span className="flex items-center gap-2 min-w-0">
+                      <SkillIcon skill={skill} size={12} className="shrink-0 opacity-80" />
+                      <span className="truncate text-xs">{skill.name}</span>
+                    </span>
+                    <span className={`truncate pl-5 text-[0.625rem] font-mono ${selectedId === skill.id ? 'text-white/75' : 'text-[var(--sidebar-text)]'}`}>{skill.id}</span>
+                  </button>
+                ))}
+                {(!manifest || manifest.skills.length === 0) && (
+                  <div className="px-3 py-3 text-xs text-[var(--sidebar-text)] text-center">{t('settings.noSkills')}</div>
+                )}
+              </div>
+
+              <div className="flex-1 flex flex-col min-w-0">
+                {selected && (
+                  <div className="flex items-center justify-end gap-1 mb-1 -mt-1">
+                    <button onClick={beginEdit} className="text-[0.6875rem] text-[var(--editor-accent)] hover:underline px-2 py-1">{t('settings.edit')}</button>
+                    <button onClick={() => { setDeleteOpen(true); setDeleteError(null) }} className="text-[0.6875rem] text-red-500 hover:underline px-2 py-1">{t('settings.deleteSkill')}</button>
+                  </div>
+                )}
+
+                {selected ? (
+                  <>
+                    <div className="mb-2">
+                      <div className="flex items-center gap-2">
+                        <SkillIcon skill={selected} size={14} className="shrink-0 text-[var(--editor-accent)]" />
+                        <span className="text-[0.8125rem] font-medium text-[var(--editor-text)] truncate">{selected.name}</span>
+                        <span className="text-[0.625rem] font-mono text-[var(--editor-accent)]">{selected.id}</span>
+                        {selected.needsDoc && (
+                          <span className="text-[0.625rem] px-1.5 py-0.5 rounded bg-[var(--editor-hover)] text-[var(--sidebar-text)]">{t('settings.skillNeedsDocShort')}</span>
+                        )}
+                      </div>
+                      {selected.summary && <p className="text-[0.6875rem] text-[var(--sidebar-text)] mt-0.5">{selected.summary}</p>}
+                      {selected.description && <p className="text-[0.6875rem] text-[var(--sidebar-text)] mt-1 whitespace-pre-wrap">{selected.description}</p>}
+                    </div>
+                    <MarkdownEditPreview value={content} readOnly minHeight={240} />
+                  </>
+                ) : (
+                  <div className="flex items-center justify-center h-36 text-xs text-[var(--sidebar-text)] border border-[var(--editor-border)] rounded-lg bg-[var(--editor-surface)]">{t('settings.selectSkillToEdit')}</div>
+                )}
+
+                {selected && deleteOpen && (
+                  <div
+                    className="mt-2 rounded-lg border border-red-400/50 p-2.5"
+                    style={{ background: 'color-mix(in srgb, var(--editor-surface) 80%, transparent)' }}
+                  >
+                    <p className="text-[0.75rem] text-[var(--editor-text)] mb-1">
+                      {t('settings.deleteSkillConfirm', { name: selected.name })}
+                    </p>
+                    {deleteError && <p className="text-[0.6875rem] text-red-500 mb-1 break-words">{deleteError}</p>}
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => setDeleteOpen(false)} disabled={deleteBusy} className="settings-btn-secondary">{t('common.cancel')}</button>
+                      <button
+                        onClick={handleDelete}
+                        disabled={deleteBusy}
+                        className="settings-btn-primary"
+                        style={{ background: '#dc2626', ...(deleteBusy ? { opacity: 0.5 } : {}) }}
+                      >
+                        {t('common.delete')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </Section>
+      </div>
+    </div>
+  )
+}
+
+
+// ===================== 划词助手 =====================
+
+const SYSTEM_ACTION_DEFS: Array<{
+  type: SelectionSystemAction
+  icon: typeof Copy
+  labelKey: string
+}> = [
+  { type: 'copy', icon: Copy, labelKey: 'selection.copy' },
+  { type: 'paste', icon: ClipboardPaste, labelKey: 'selection.paste' },
+  { type: 'chat', icon: MessageSquarePlus, labelKey: 'selection.chat' },
+]
+
+function SelectionAssistantSettings() {
+  const { t } = useI18n()
+  const actions = useSettingsStore((s) => s.selectionActions)
+  const setField = useSettingsStore((s) => s.setField)
+  const [skills, setSkills] = useState<AiSkill[]>([])
+  const [editingLabelId, setEditingLabelId] = useState<string | null>(null)
+  const [addTab, setAddTab] = useState<'system' | 'skills'>('skills')
+
+  useEffect(() => {
+    let alive = true
+    const reload = () => {
+      loadSkills().then((list) => { if (alive) setSkills(list) })
+    }
+    reload()
+    window.addEventListener(SKILLS_CHANGED_EVENT, reload)
+    return () => {
+      alive = false
+      window.removeEventListener(SKILLS_CHANGED_EVENT, reload)
+    }
+  }, [])
+
+  const systemLabels = useMemo<Record<SelectionSystemAction, string>>(() => ({
+    copy: t('selection.copy'),
+    paste: t('selection.paste'),
+    chat: t('selection.chat'),
+  }), [t])
+
+  const items = useMemo(
+    () => buildSelectionToolbarItems(actions, skills, systemLabels),
+    [actions, skills, systemLabels],
+  )
+  const previewItems = items.filter((item) => !item.missingSkill)
+
+  const updateActions = (next: SelectionActionConfig[]) => setField('selectionActions', next)
+
+  const defaultLabel = (action: SelectionActionConfig): string => {
+    if (action.type === 'skill') {
+      return skills.find((s) => s.id === action.skillId)?.name ?? action.skillId ?? ''
+    }
+    return systemLabels[action.type]
+  }
+
+  const addSkill = (skill: AiSkill) => {
+    if (hasSelectionAction(actions, 'skill', skill.id)) return
+    updateActions([
+      ...actions,
+      { id: createSelectionActionId('skill', skill.id), type: 'skill', skillId: skill.id },
+    ])
+  }
+
+  const addSystem = (type: SelectionSystemAction) => {
+    if (hasSelectionAction(actions, type)) return
+    updateActions([...actions, { id: createSelectionActionId(type), type }])
+  }
+
+  const updateLabel = (action: SelectionActionConfig, value: string) => {
+    updateActions(actions.map((a) => {
+      if (a.id !== action.id) return a
+      const label = value.trim()
+      if (!label) {
+        const { label: _drop, ...rest } = a
+        return rest
+      }
+      return { ...a, label: value }
+    }))
+  }
+
+  const removeAction = (id: string) => {
+    updateActions(actions.filter((a) => a.id !== id))
+  }
+
+  const resetDefault = () => {
+    updateActions(DEFAULT_SELECTION_ACTIONS.map((a) => ({ ...a })))
+  }
+
+  return (
+    <div className="settings-content-scroll">
+      <div className="space-y-4">
+        <Section title={t('settings.selectionPreview')}>
+          <div
+            className="rounded-lg border border-[var(--editor-border)] px-3 py-4"
+            style={{ background: 'var(--editor-bg)' }}
+          >
+            {previewItems.length > 0 ? (
+              <div className="flex justify-center overflow-x-auto py-1">
+                <SelectionToolbarView items={previewItems} interactive={false} />
+              </div>
+            ) : (
+              <p className="text-center text-[0.75rem] text-[var(--sidebar-text)]">{t('settings.selectionEmpty')}</p>
+            )}
+            <p className="mt-2 text-center text-[0.6875rem] text-[var(--sidebar-text)]">
+              {t('settings.selectionPreviewHint')}
+            </p>
+          </div>
+        </Section>
+
+        <div className="flex items-start gap-4 px-5 pb-4">
+          <div className="min-w-0 flex-1">
+            <h3 className="settings-section-title">{t('settings.selectionFunctions')}</h3>
+            <div className="space-y-1.5">
+              {items.length === 0 && (
+                <p className="text-[0.6875rem] text-[var(--sidebar-text)] pb-1">{t('settings.selectionEmpty')}</p>
+              )}
+              {items.map((item, index) => {
+                const action = actions.find((a) => a.id === item.id)!
+                const SystemIcon = item.systemAction
+                  ? SYSTEM_ACTION_DEFS.find((d) => d.type === item.systemAction)?.icon
+                  : null
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-2 rounded-lg border border-[var(--editor-border)] px-2.5 py-2"
+                    style={{ background: 'var(--editor-surface)' }}
+                  >
+                    <span className="shrink-0 text-[var(--editor-accent)]">
+                      {SystemIcon ? <SystemIcon size={14} /> : <SkillIcon name={item.iconName} size={14} />}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate text-[0.75rem] text-[var(--editor-text)]">{item.label}</span>
+                        <span className="shrink-0 rounded px-1 py-0.5 text-[0.625rem] text-[var(--sidebar-text)] bg-[var(--editor-hover)]">
+                          {item.type === 'skill' ? t('settings.selectionSkillSource') : t('settings.selectionSystemSource')}
+                        </span>
+                        {item.missingSkill && (
+                          <span className="shrink-0 text-[0.625rem] text-red-500">{t('settings.selectionMissingSkill')}</span>
+                        )}
+                      </div>
+                      {editingLabelId === item.id && (
+                        <input
+                          type="text"
+                          autoFocus
+                          value={action.label ?? ''}
+                          maxLength={24}
+                          onChange={(e) => updateLabel(action, e.target.value)}
+                          onBlur={() => setEditingLabelId(null)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === 'Escape') setEditingLabelId(null)
+                          }}
+                          className="settings-input mt-1 text-[0.6875rem]"
+                          placeholder={defaultLabel(action)}
+                          aria-label={t('settings.selectionDisplayName')}
+                        />
+                      )}
+                    </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        onClick={() => setEditingLabelId(editingLabelId === item.id ? null : item.id)}
+                        className={`p-1 rounded hover:bg-[var(--editor-hover)] ${editingLabelId === item.id ? 'text-[var(--editor-accent)]' : 'text-[var(--sidebar-text)]'}`}
+                        title={t('settings.selectionEditName')}
+                        aria-label={t('settings.selectionEditName')}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        onClick={() => updateActions(moveSelectionAction(actions, item.id, -1))}
+                        disabled={index === 0}
+                        className="p-1 rounded text-[var(--sidebar-text)] hover:bg-[var(--editor-hover)] disabled:opacity-30"
+                        title={t('settings.selectionMoveUp')}
+                        aria-label={t('settings.selectionMoveUp')}
+                      >
+                        <ArrowUp size={12} />
+                      </button>
+                      <button
+                        onClick={() => updateActions(moveSelectionAction(actions, item.id, 1))}
+                        disabled={index === items.length - 1}
+                        className="p-1 rounded text-[var(--sidebar-text)] hover:bg-[var(--editor-hover)] disabled:opacity-30"
+                        title={t('settings.selectionMoveDown')}
+                        aria-label={t('settings.selectionMoveDown')}
+                      >
+                        <ArrowDown size={12} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (editingLabelId === item.id) setEditingLabelId(null)
+                          removeAction(item.id)
+                        }}
+                        className="p-1 rounded text-red-500 hover:bg-[var(--editor-hover)]"
+                        title={t('settings.selectionRemove')}
+                        aria-label={t('settings.selectionRemove')}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="flex justify-end pt-1.5">
+              <button onClick={resetDefault} className="text-[0.6875rem] text-[var(--editor-accent)] hover:underline">
+                {t('settings.selectionRestoreDefault')}
+              </button>
+            </div>
+          </div>
+
+          <div className="w-[42%] min-w-[240px] max-w-[320px] shrink-0">
+            <h3 className="settings-section-title">{t('settings.selectionAdd')}</h3>
+            <div className="overflow-hidden rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)]">
+              <div className="flex border-b border-[var(--editor-border)]">
+                {(['system', 'skills'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setAddTab(tab)}
+                    className={`flex-1 px-3 py-1.5 text-[0.6875rem] transition-colors ${
+                      addTab === tab
+                        ? 'text-[var(--editor-accent)] border-b-2 border-[var(--editor-accent)]'
+                        : 'text-[var(--sidebar-text)] hover:bg-[var(--editor-hover)]'
+                    }`}
+                  >
+                    {tab === 'system' ? t('settings.selectionSystem') : t('settings.selectionSkills')}
+                  </button>
+                ))}
+              </div>
+
+              <div className="max-h-[340px] overflow-y-auto">
+                {addTab === 'system' ? (
+                  SYSTEM_ACTION_DEFS.map((def) => {
+                    const added = hasSelectionAction(actions, def.type)
+                    const Icon = def.icon
+                    return (
+                      <div key={def.type} className="flex items-center gap-2 border-b border-[var(--editor-border)] px-2.5 py-2 last:border-b-0">
+                        <Icon size={13} className="shrink-0 text-[var(--editor-accent)]" />
+                        <span className="min-w-0 flex-1 truncate text-[0.75rem] text-[var(--editor-text)]">{t(def.labelKey)}</span>
+                        <button
+                          onClick={() => addSystem(def.type)}
+                          disabled={added}
+                          className="shrink-0 p-1 rounded text-[var(--editor-accent)] hover:bg-[var(--editor-hover)] disabled:opacity-40"
+                          title={added ? t('settings.selectionAlreadyAdded') : t('settings.selectionAdd')}
+                          aria-label={added ? t('settings.selectionAlreadyAdded') : t('settings.selectionAdd')}
+                        >
+                          {added ? <Check size={12} className="text-emerald-500" /> : <Plus size={12} />}
+                        </button>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <>
+                    {skills.map((skill) => {
+                      const added = hasSelectionAction(actions, 'skill', skill.id)
+                      return (
+                        <div key={skill.id} className="flex items-center gap-2 border-b border-[var(--editor-border)] px-2.5 py-2 last:border-b-0">
+                          <SkillIcon skill={skill} size={13} className="shrink-0 text-[var(--editor-accent)]" />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[0.75rem] text-[var(--editor-text)]">{skill.name}</div>
+                            {skill.summary && <div className="truncate text-[0.625rem] text-[var(--sidebar-text)]">{skill.summary}</div>}
+                          </div>
+                          <button
+                            onClick={() => addSkill(skill)}
+                            disabled={added}
+                            className="shrink-0 p-1 rounded text-[var(--editor-accent)] hover:bg-[var(--editor-hover)] disabled:opacity-40"
+                            title={added ? t('settings.selectionAlreadyAdded') : t('settings.selectionAdd')}
+                            aria-label={added ? t('settings.selectionAlreadyAdded') : t('settings.selectionAdd')}
+                          >
+                            {added ? <Check size={12} className="text-emerald-500" /> : <Plus size={12} />}
+                          </button>
+                        </div>
+                      )
+                    })}
+                    {skills.length === 0 && (
+                      <p className="px-3 py-3 text-center text-[0.6875rem] text-[var(--sidebar-text)]">{t('settings.selectionNoSkills')}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -2307,6 +2954,8 @@ function CloudSettings() {
   const [hasCred, setHasCred] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   // 回填已保存的用户名（密码永不回传，只能显示"已保存"）
   useEffect(() => {
@@ -2360,6 +3009,26 @@ function CloudSettings() {
       setTestMsg({ ok: false, text: e instanceof Error ? e.message : String(e) })
     }
     setTesting(false)
+  }
+
+  const handleSyncCache = async () => {
+    setSyncing(true)
+    setSyncMsg(null)
+    try {
+      const result = await runCloudCacheSync(baseUrl, rootPath)
+      setSyncMsg({
+        ok: true,
+        text: t('settings.cloudSyncSummary', {
+          removed: result.removed,
+          downloaded: result.downloaded,
+          updated: result.updated,
+          failed: result.failed,
+        }),
+      })
+    } catch (e) {
+      setSyncMsg({ ok: false, text: e instanceof Error ? e.message : String(e) })
+    }
+    setSyncing(false)
   }
 
   return (
@@ -2475,6 +3144,45 @@ function CloudSettings() {
               <p className="text-[0.6875rem] text-[var(--sidebar-text)]">{t('settings.cloudCredentialsNote')}</p>
             </Row>
           </Section>
+
+          <Section title={t('settings.cloudSectionSync')}>
+            <Row label={t('settings.cloudMirrorAll')} hint={t('settings.cloudMirrorAllHint')}>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={store.webdavMirrorAll}
+                  onChange={(e) => store.setField('webdavMirrorAll', e.target.checked)}
+                />
+              </label>
+            </Row>
+            <Row label={t('settings.cloudSyncNow')} hint={t('settings.cloudSyncHint')}>
+              <div className="flex items-center gap-3 flex-wrap justify-end">
+                <span className="text-[0.6875rem] text-[var(--sidebar-text)]">
+                  {store.webdavLastSyncAt
+                    ? `${t('settings.cloudSyncLastAt', { time: new Date(store.webdavLastSyncAt).toLocaleString() })} · ${t('settings.cloudSyncSummary', {
+                      removed: store.webdavLastSyncRemoved,
+                      downloaded: store.webdavLastSyncDownloaded,
+                      updated: store.webdavLastSyncUpdated,
+                      failed: store.webdavLastSyncFailed,
+                    })}`
+                    : t('settings.cloudSyncNever')}
+                </span>
+                <button
+                  onClick={handleSyncCache}
+                  disabled={syncing || !baseUrl.trim()}
+                  className="settings-btn-primary"
+                  style={syncing || !baseUrl.trim() ? { opacity: 0.5 } : undefined}
+                >
+                  {syncing ? t('settings.cloudSyncing') : t('settings.cloudSyncNow')}
+                </button>
+              </div>
+              {syncMsg && (
+                <p className={`text-[0.6875rem] break-all ${syncMsg.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+                  {syncMsg.ok ? syncMsg.text : t('settings.cloudSyncFailed', { msg: syncMsg.text })}
+                </p>
+              )}
+            </Row>
+          </Section>
         </div>
       </div>
     </>
@@ -2494,7 +3202,7 @@ export default function SettingsModal({ isOpen, onClose, defaultTab }: SettingsM
 
   const content: Record<CategoryKey, React.ReactNode> = {
     general: <GeneralSettings />, appearance: <AppearanceSettings />, editor: <EditorSettings />,
-    liveMode: <LiveModeSettings />, ai: <AISettings />, cloud: <CloudSettings />,
+    liveMode: <LiveModeSettings />, ai: <AISettings />, skills: <SkillsSettings />, selection: <SelectionAssistantSettings />, cloud: <CloudSettings />,
     plugins: <PluginsSettings />,
     shortcuts: <ShortcutsSettings />, templates: <TemplatesSettings />, docs: <DocumentationSettings />,
     about: <AboutSettings />, products: <OtherProductsSettings />,

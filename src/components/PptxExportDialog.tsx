@@ -12,12 +12,12 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertTriangle, CheckCircle2, FileDown, Loader2, Play, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FileDown, Loader2, Play, ScanSearch, X } from 'lucide-react'
 import ExportResultActions from './ExportResultActions'
 import { useI18n } from '../i18n'
 import { useSettingsStore } from '../stores/settingsStore'
 import { invokeTauri, invokeTauriOrThrow } from '../lib/tauri'
-import { exportPptx, type PptxExportResult, type PptxOverflowMode } from '../lib/pptxExport'
+import { exportPptx, measurePptx, type PptxExportResult, type PptxMeasureResult, type PptxOverflowMode } from '../lib/pptxExport'
 import { deriveExportBaseName } from '../lib/exportName'
 import { parseDeck } from '../lib/slideDeck'
 import type { SlideTypography } from '../lib/slideTypography'
@@ -79,8 +79,8 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
   const includeFooter = useSettingsStore((s) => s.pptxIncludeFooter)
   const overflowMode = useSettingsStore((s) => s.pptxOverflowMode)
   const rangeMode = useSettingsStore((s) => s.pptxRangeMode)
-  const customStart = useSettingsStore((s) => s.pptxCustomStart)
-  const customEnd = useSettingsStore((s) => s.pptxCustomEnd)
+  const customStart = useSettingsStore((s) => s.pptxRangeStart)
+  const customEnd = useSettingsStore((s) => s.pptxRangeEnd)
   const setField = useSettingsStore((s) => s.setField)
   const slideFontFamily = useSettingsStore((s) => s.slideFontFamily)
   const slideFontWeight = useSettingsStore((s) => s.slideFontWeight)
@@ -100,12 +100,16 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<{ path: string; count: number } | null>(null)
   const [warnings, setWarnings] = useState<PptxWarning[]>([])
-  const [overflowSlides, setOverflowSlides] = useState<number[]>([])
+  const [redSlides, setRedSlides] = useState<number[]>([])
+  const [yellowSlides, setYellowSlides] = useState<number[]>([])
+  const [detected, setDetected] = useState<PptxMeasureResult | null>(null)
+  // 导出字号：默认继承演示设置，可单独调整本次导出（70%–160%）
+  const [exportFontScale, setExportFontScale] = useState(slideFontScale)
   const abortRef = useRef<AbortController | null>(null)
 
   const hasCurrent = typeof source.currentSlide === 'number'
 
-  // 打开时只重置临时进度，并校正跨文档后可能失效的范围。
+  // 每次打开重置运行态；导出范围来自设置，跨打开保留
   useEffect(() => {
     if (!open) return
     setBusy(false)
@@ -113,16 +117,33 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
     setError(null)
     setResult(null)
     setWarnings([])
-    setOverflowSlides([])
+    setRedSlides([])
+    setYellowSlides([])
+    setDetected(null)
+    setExportFontScale(slideFontScale)
     abortRef.current = null
-    if (rangeMode === 'current' && !hasCurrent) {
+  }, [open, slideFontScale])
+
+  // 自定义范围按当前总页数收敛（文档换页数时不让旧范围越界）
+  useEffect(() => {
+    if (!open) return
+    if (!hasCurrent && rangeMode === 'current') {
       setField('pptxRangeMode', 'all')
+      return
     }
-    const end = Math.max(1, Math.min(totalSlides, customEnd > 0 ? customEnd : totalSlides))
-    const start = Math.max(1, Math.min(end, customStart))
-    if (start !== customStart) setField('pptxCustomStart', start)
-    if (end !== customEnd) setField('pptxCustomEnd', end)
-  }, [open, totalSlides, hasCurrent, rangeMode, customStart, customEnd, setField])
+    const maxPage = Math.max(1, totalSlides)
+    const start = Math.min(maxPage, Math.max(1, Math.trunc(customStart)))
+    const endRaw = customEnd >= 1 ? Math.trunc(customEnd) : maxPage
+    const end = Math.min(maxPage, Math.max(1, endRaw))
+    if (start !== customStart) setField('pptxRangeStart', start)
+    if (end !== customEnd) setField('pptxRangeEnd', end)
+  }, [open, hasCurrent, rangeMode, totalSlides, customStart, customEnd, setField])
+
+  // 任何影响版式的选项变化后，旧检测结果立即失效
+  useEffect(() => {
+    if (!open) return
+    setDetected(null)
+  }, [open, rangeMode, customStart, customEnd, includeNotes, includeFooter, overflowMode, exportFontScale])
 
   // Esc：未在导出时关闭（导出中 Esc 取消）
   useEffect(() => {
@@ -141,19 +162,96 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
   const typography: Partial<SlideTypography> = {
     fontFamily: slideFontFamily,
     fontWeight: slideFontWeight,
-    fontScale: slideFontScale,
+    fontScale: exportFontScale,
     fillWidth: slideFillWidth,
     fillHeight: slideFillHeight,
   }
+
+  const buildRange = () => {
+    let range: { start: number; end: number } | undefined
+    if (rangeMode === 'current' && typeof source.currentSlide === 'number') {
+      range = { start: source.currentSlide, end: source.currentSlide }
+    } else if (rangeMode === 'custom') {
+      const s = Math.max(1, Math.min(totalSlides, customStart))
+      const rawEnd = customEnd >= 1 ? customEnd : totalSlides
+      const e = Math.max(1, Math.min(totalSlides, rawEnd))
+      range = { start: Math.min(s, e) - 1, end: Math.max(s, e) - 1 }
+    }
+    return range
+  }
+
+  const baseOptions = () => ({
+    content: source.content,
+    fallbackTitle: source.title,
+    theme: source.theme,
+    dark: source.dark,
+    customCssBase: source.customCssBase,
+    typography,
+    colStyle: source.colStyle,
+    colAlign: source.colAlign,
+    enabledPlugins: source.enabledPlugins,
+    pluginConfigs: source.pluginConfigs,
+    docBaseDir: source.docBaseDir ?? null,
+    includeNotes,
+    includeFooter,
+    overflowMode: overflowMode as PptxOverflowMode,
+    range: buildRange(),
+  })
+
+  const startMeasure = useCallback(async () => {
+    if (busy) return
+    setError(null)
+    setResult(null)
+    setWarnings([])
+    setRedSlides([])
+    setYellowSlides([])
+    setDetected(null)
+
+    const controller = new AbortController()
+    abortRef.current = controller
+    setBusy(true)
+    setProgress({ pct: 3, text: t('pptxExport.detecting') })
+
+    try {
+      const res = await measurePptx({
+        ...baseOptions(),
+        signal: controller.signal,
+        onProgress: (done, count, label) => {
+          if (label === 'render') {
+            setProgress({
+              pct: 5 + (count ? done / count : 0) * 90,
+              text: t('pptxExport.detecting'),
+            })
+          }
+        },
+      })
+      setWarnings(res.warnings)
+      setRedSlides(res.redSlides)
+      setYellowSlides(res.yellowSlides)
+      setDetected(res)
+      setProgress({ pct: 100, text: t('pptxExport.detectDone') })
+    } catch (e) {
+      const err = e as Error
+      if (err?.name === 'AbortError') setError(t('pptxExport.cancelled'))
+      else setError(t('pptxExport.failed', { message: err?.message || String(e) }))
+    } finally {
+      setBusy(false)
+      abortRef.current = null
+    }
+  }, [
+    busy, t, source, rangeMode, customStart, customEnd,
+    includeNotes, includeFooter, overflowMode,
+    slideFontFamily, slideFontWeight, slideFillWidth, slideFillHeight, exportFontScale,
+  ])
 
   const startExport = useCallback(async () => {
     if (busy) return
     setError(null)
     setResult(null)
     setWarnings([])
-    setOverflowSlides([])
+    setRedSlides([])
+    setYellowSlides([])
 
-    const total = Math.max(1, totalSlides)
     // 默认文件名与其它导出同一口径：已保存文件的文件名 → 文档标题 → slides
     const defaultName = `${sanitizeFileName(
       deriveExportBaseName({ content: source.content, filePath: source.filePath, fallback: 'slides' }),
@@ -171,15 +269,6 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
     if (!path) return
     if (!/\.pptx$/i.test(path)) path += '.pptx'
 
-    let range: { start: number; end: number } | undefined
-    if (rangeMode === 'current' && typeof source.currentSlide === 'number') {
-      range = { start: source.currentSlide, end: source.currentSlide }
-    } else if (rangeMode === 'custom') {
-      const s = Math.max(1, Math.min(total, customStart))
-      const e = Math.max(1, Math.min(total, customEnd))
-      range = { start: Math.min(s, e) - 1, end: Math.max(s, e) - 1 }
-    }
-
     const controller = new AbortController()
     abortRef.current = controller
     setBusy(true)
@@ -187,21 +276,7 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
 
     try {
       const res: PptxExportResult = await exportPptx({
-        content: source.content,
-        fallbackTitle: source.title,
-        theme: source.theme,
-        dark: source.dark,
-        customCssBase: source.customCssBase,
-        typography,
-        colStyle: source.colStyle,
-        colAlign: source.colAlign,
-        enabledPlugins: source.enabledPlugins,
-        pluginConfigs: source.pluginConfigs,
-        docBaseDir: source.docBaseDir ?? null,
-        includeNotes,
-        includeFooter,
-        overflowMode: overflowMode as PptxOverflowMode,
-        range,
+        ...baseOptions(),
         signal: controller.signal,
         onProgress: (done, count, label) => {
           if (label === 'render') {
@@ -218,7 +293,7 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
             })
           }
         },
-      })
+      }, detected ?? undefined)
 
       setProgress({ pct: 96, text: t('pptxExport.stepSave') })
       const base64 = await toBase64(res.buffer)
@@ -226,7 +301,9 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
 
       setProgress({ pct: 100, text: t('pptxExport.done') })
       setWarnings(res.warnings)
-      setOverflowSlides(res.overflowSlides)
+      setRedSlides(res.redSlides)
+      setYellowSlides(res.yellowSlides)
+      setDetected(null)
       setResult({ path, count: res.slideCount })
     } catch (e) {
       const err = e as Error
@@ -239,7 +316,8 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
   }, [
     busy, source, rangeMode, customStart, customEnd, t,
     includeNotes, includeFooter, overflowMode,
-    slideFontFamily, slideFontWeight, slideFontScale, slideFillWidth, slideFillHeight,
+    slideFontFamily, slideFontWeight, slideFillWidth, slideFillHeight, exportFontScale,
+    detected,
   ])
 
   if (!open) return null
@@ -329,7 +407,7 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
                     min={1}
                     max={totalSlides}
                     value={customStart}
-                    onChange={(e) => setField('pptxCustomStart', Number(e.target.value) || 1)}
+                    onChange={(e) => setField('pptxRangeStart', Math.max(1, Number(e.target.value) || 1))}
                     className="w-14 px-1.5 py-0.5 rounded border border-[var(--editor-border)] bg-[var(--editor-bg)]"
                   />
                   <span className="opacity-60">–</span>
@@ -337,8 +415,8 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
                     type="number"
                     min={1}
                     max={totalSlides}
-                    value={customEnd}
-                    onChange={(e) => setField('pptxCustomEnd', Number(e.target.value) || 1)}
+                    value={customEnd >= 1 ? customEnd : Math.max(1, totalSlides)}
+                    onChange={(e) => setField('pptxRangeEnd', Math.max(0, Number(e.target.value) || 0))}
                     className="w-14 px-1.5 py-0.5 rounded border border-[var(--editor-border)] bg-[var(--editor-bg)]"
                   />
                 </span>
@@ -366,6 +444,32 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
               {t('pptxExport.footer')}
               <span className="text-[var(--sidebar-text)]">{t('pptxExport.footerHint')}</span>
             </label>
+          </div>
+
+          {/* 导出字号 */}
+          <div className="mb-3">
+            <div className="font-semibold mb-1.5 flex items-center gap-2">
+              {t('pptxExport.fontScale')}
+              <span className="font-normal text-[var(--sidebar-text)]">{Math.round(exportFontScale * 100)}%</span>
+              {Math.abs(exportFontScale - slideFontScale) > 1e-9 && (
+                <button
+                  onClick={() => setExportFontScale(slideFontScale)}
+                  className="text-[0.625rem] px-1.5 py-0.5 rounded border border-[var(--editor-border)] hover:bg-[var(--editor-hover)]"
+                >
+                  {t('pptxExport.fontScaleInherit')}
+                </button>
+              )}
+            </div>
+            <input
+              type="range"
+              min={70}
+              max={160}
+              step={5}
+              value={Math.round(exportFontScale * 100)}
+              onChange={(e) => setExportFontScale(Number(e.target.value) / 100)}
+              className="w-full"
+            />
+            <div className="text-[0.6875rem] text-[var(--sidebar-text)] mt-1">{t('pptxExport.fontScaleHint')}</div>
           </div>
 
           {/* 超页 */}
@@ -438,16 +542,43 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
             </div>
           )}
 
-          {(warnings.length > 0 || overflowSlides.length > 0) && (
+          {(detected !== null || warnings.length > 0 || redSlides.length > 0 || yellowSlides.length > 0) && (
             <div className="mt-3">
               <div className="font-semibold flex items-center gap-1.5 mb-1">
                 <AlertTriangle size={13} style={{ color: 'var(--editor-warning,#d97706)' }} />
                 {t('pptxExport.warnings')}
               </div>
-              {overflowSlides.length > 0 && (
+              {detected && (
+                <div className="mb-1.5 text-[0.6875rem] text-[var(--sidebar-text)] leading-relaxed">
+                  {t('pptxExport.detectSummary', {
+                    total: detected.slideCount,
+                    green: Math.max(0, detected.slideCount - detected.yellowSlides.length - detected.redSlides.length),
+                    yellow: detected.yellowSlides.length,
+                    red: detected.redSlides.length,
+                  })}
+                </div>
+              )}
+              {redSlides.length > 0 && (
                 <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                  <span className="text-[var(--sidebar-text)]">{t('pptxExport.overflowPages')}</span>
-                  {overflowSlides.map((p) => (
+                  <span className="text-[var(--sidebar-text)]">{t('pptxExport.redPages')}</span>
+                  {redSlides.map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => jump(p)}
+                      className="px-1.5 py-0.5 rounded border border-[var(--editor-border)] hover:bg-[var(--editor-hover)]"
+                      title={t('pptxExport.jump')}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {yellowSlides.length > 0 && (
+                <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[var(--sidebar-text)]">
+                    {t(overflowMode === 'shrink' ? 'pptxExport.compressedPages' : 'pptxExport.shrinkablePages')}
+                  </span>
+                  {yellowSlides.map((p) => (
                     <button
                       key={p}
                       onClick={() => jump(p)}
@@ -504,6 +635,13 @@ export default function PptxExportDialog({ open, onClose, source, onPreview, onJ
                 className="px-3 py-1.5 rounded border border-[var(--editor-border)] hover:bg-[var(--editor-hover)]"
               >
                 {t('common.cancel')}
+              </button>
+              <button
+                onClick={startMeasure}
+                className="px-3 py-1.5 rounded border border-[var(--editor-border)] hover:bg-[var(--editor-hover)] flex items-center gap-1.5"
+              >
+                <ScanSearch size={14} />
+                {t('pptxExport.detectLayout')}
               </button>
               <button
                 onClick={startExport}
