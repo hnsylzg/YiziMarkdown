@@ -16,7 +16,7 @@ test('垂直节奏：正文字号基准与间距令牌存在', () => {
   const root = rule('.yizi-slideshow {')
   assert.match(root, /--ys-u:\s*calc\(20px \* var\(--ys-font-scale, 1\)\)/)
   assert.match(root, /--ys-gap-sm:\s*calc\(0\.55 \* var\(--ys-u\)\)/)
-  assert.match(root, /--ys-gap-md:\s*calc\(0\.7 \* var\(--ys-u\)\)/)
+  assert.match(root, /--ys-gap-md:\s*calc\(0\.8 \* var\(--ys-u\)\)/)
 })
 
 test('垂直节奏：代码块 / 表格 / 分隔线使用同一边距令牌', () => {
@@ -31,7 +31,7 @@ test('垂直节奏：正文块只写 bottom margin，避免 flex 相加 / block 
   assert.doesNotMatch(body, /margin:\s*var\(--ys-gap-md\) 0/)
 })
 
-test('垂直节奏：标题下边距补偿正文顶部 margin（0.7u）', () => {
+test('垂直节奏：标题下边距补偿正文顶部 margin（0.8u）', () => {
   const expected = {
     h1: '1.4', h2: '1', h3: '0.6', h4: '0.5', h5: '0.35', h6: '0.3',
   }
@@ -39,4 +39,18 @@ test('垂直节奏：标题下边距补偿正文顶部 margin（0.7u）', () => 
     const margin = rule(`.ys-slide ${level} {`).match(/margin:\s*[^;]+;/)?.[0] || ''
     assert.ok(margin.includes(`calc(${factor} * var(--ys-u))`), `${level}: ${margin}`)
   }
+})
+
+test('列表内容页与路线图列表保持正文字号', () => {
+  const contentList = rule('.ys-layout-content-list ul,\n.ys-layout-content-list ol {')
+  const roadmap = rule('.ys-layout-roadmap ul {')
+  assert.match(contentList, /font-size:\s*1em/)
+  assert.match(roadmap, /font-size:\s*1em/)
+  assert.doesNotMatch(contentList, /1\.08em/)
+  assert.doesNotMatch(roadmap, /1\.08em/)
+})
+
+test('分栏后的栏外文案保留外部间距', () => {
+  const cols = rule('.ys-cols:has(+ .ys-col-aside) {')
+  assert.match(cols, /margin-bottom:\s*var\(--ys-gap-md\)/)
 })

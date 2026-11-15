@@ -15,7 +15,7 @@
   /* 1280×720 逻辑画布，以 20px 正文为紧凑版基准；1080p 显示时为 30px。 */
   --ys-u: calc(20px * var(--ys-font-scale, 1));
   --ys-gap-sm: calc(0.55 * var(--ys-u));
-  --ys-gap-md: calc(0.7 * var(--ys-u));
+  --ys-gap-md: calc(0.8 * var(--ys-u));
   --ys-page-title-size: calc(2 * var(--ys-u));
   --ys-title-h1-size: calc(2.4 * var(--ys-u));
   --ys-title-h3-size: calc(1.5 * var(--ys-u));
@@ -1295,7 +1295,7 @@
 
 .ys-layout-content-list ul,
 .ys-layout-content-list ol {
-  font-size: 1.08em;
+  font-size: 1em;
   max-width: 100%;
 }
 
@@ -1355,7 +1355,7 @@
 }
 
 .ys-layout-roadmap ul {
-  font-size: 1.08em;
+  font-size: 1em;
   max-width: 100%;
 }
 
@@ -1641,6 +1641,11 @@
   max-width: none;   /* 页边距已提供呼吸空间；66rem 会把 3~4 栏压得过窄 */
   margin: 0 auto;
   text-align: left;
+}
+
+/* 分栏区后面紧跟栏外文案时，保留分栏块的外部下边距。 */
+.ys-cols:has(+ .ys-col-aside) {
+  margin-bottom: var(--ys-gap-md);
 }
 
 /* 每栏：min-width:0 是必须的 —— grid 项目默认 min-width:auto，
