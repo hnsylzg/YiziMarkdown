@@ -42,6 +42,12 @@ export interface SceneOptions {
 }
 
 interface Box { x: number; y: number; w: number; h: number }
+export interface CodeFlowExpansion {
+  x: number
+  w: number
+  bottom: number
+  extra: number
+}
 
 const EPS = 2
 const SLIDE_W_IN = 40 / 3
@@ -61,6 +67,56 @@ export function fitCodeRowCards(cards: CardNode[], framesByCard: RectNode[][]): 
   cards.forEach((card) => {
     card.h = round3(fittedH)
   })
+}
+
+function horizontalOverlap(a: { x: number; w: number }, b: { x: number; w: number }): boolean {
+  const overlap = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+  return overlap > Math.min(a.w, b.w) * 0.25
+}
+
+function shiftNodeY(node: SceneNode, delta: number): void {
+  if (node.t === 'line') {
+    node.y1 += delta
+    node.y2 += delta
+  } else {
+    node.y += delta
+  }
+}
+
+function nodeFlowBox(node: SceneNode): { x: number; w: number; y: number } {
+  if (node.t === 'line') {
+    return {
+      x: Math.min(node.x1, node.x2),
+      w: Math.abs(node.x2 - node.x1),
+      y: Math.min(node.y1, node.y2),
+    }
+  }
+  return { x: node.x, w: node.w, y: node.y }
+}
+
+/**
+ * 导出时为避免横向溢出，代码行可能被额外折行并撑高色块。
+ * 浏览器坐标不会知道这次增高，因此同一栏、代码块下方的后续节点必须同步下移。
+ */
+export function applyCodeFlowExpansion(nodes: SceneNode[], expansions: CodeFlowExpansion[]): void {
+  if (!expansions.length) return
+  const applied: Array<CodeFlowExpansion & { shiftedBottom: number }> = []
+  for (const expansion of [...expansions].sort((a, b) => a.bottom - b.bottom)) {
+    const priorShift = applied.reduce((sum, previous) => {
+      return previous.bottom <= expansion.bottom + 0.01 &&
+        horizontalOverlap(previous, expansion)
+        ? sum + previous.extra
+        : sum
+    }, 0)
+    const shiftedBottom = expansion.bottom + priorShift
+    for (const node of nodes) {
+      const box = nodeFlowBox(node)
+      if (box.y >= shiftedBottom - 0.01 && horizontalOverlap(box, expansion)) {
+        shiftNodeY(node, expansion.extra)
+      }
+    }
+    applied.push({ ...expansion, shiftedBottom })
+  }
 }
 
 /**
@@ -354,6 +410,7 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
   const warnings: PptxWarning[] = []
   const nodes: SceneNode[] = []
   const codeFramesByCol = new Map<Element, RectNode[]>()
+  const codeFlowExpansions: CodeFlowExpansion[] = []
 
   const slideRect = rectOf(slide)
   // 演示与导出共用固定 1280×720 画布；按 96 px/in
@@ -765,6 +822,14 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
     const availPx = Math.max(1, box.w - 8)
     const wrappedLines = lines.flatMap((line) => wrapCodeRuns(line, availPx, measureChar))
     const extraPx = Math.max(0, wrappedLines.length - lines.length) * linePx
+    if (extraPx > 0) {
+      codeFlowExpansions.push({
+        x: toIn(r.x),
+        w: toIn(r.w),
+        bottom: toIn(r.y + r.h),
+        extra: toIn(extraPx),
+      })
+    }
     // 不再横向缩小代码：缩到 60% 仍放不下的长行改为折行，避免导出后横向溢出。
 
     const font = resolveFontStack(codeCS.fontFamily)
@@ -1230,6 +1295,7 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
 
   // 分栏页：先铺卡片/分隔线（在 .ys-cols 分支里完成）
   Array.from(slide.children).forEach((child) => emitBlock(child))
+  applyCodeFlowExpansion(nodes, codeFlowExpansions)
 
   // ---------- 页脚 ----------
 

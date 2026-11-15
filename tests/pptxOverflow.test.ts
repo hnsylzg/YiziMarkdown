@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 import {
+  applyCodeFlowExpansion,
   fitCodeRowCards,
   measureSceneOverflow,
   measureSceneTightPx,
@@ -54,6 +55,31 @@ function text(x: number, y: number, w: number, h: number): SceneNode {
     latin: 'Arial', ea: 'Arial',
   }
 }
+
+test('PPTX code expansion moves only following nodes in the same column', () => {
+  const above = text(1, 1.5, 4, 0.3)
+  const following = text(1, 2.1, 4, 0.3)
+  const otherColumn = text(5, 2.1, 4, 0.3)
+  applyCodeFlowExpansion(
+    [above, following, otherColumn],
+    [{ x: 1, w: 4, bottom: 2, extra: 0.3 }],
+  )
+  assert.equal(above.y, 1.5)
+  assert.equal(following.y, 2.4)
+  assert.equal(otherColumn.y, 2.1)
+})
+
+test('PPTX stacked code expansions accumulate in the same column', () => {
+  const following = text(1, 3.2, 4, 0.3)
+  applyCodeFlowExpansion(
+    [following],
+    [
+      { x: 1, w: 4, bottom: 2, extra: 0.3 },
+      { x: 1, w: 4, bottom: 3, extra: 0.2 },
+    ],
+  )
+  assert.equal(following.y, 3.7)
+})
 
 test('PPTX 超页：全部节点在页内时四边都是 0', () => {
   assert.deepEqual(measureSceneOverflow([text(1, 1, 4, 1)], W, H), {
