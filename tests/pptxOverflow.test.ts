@@ -5,18 +5,46 @@
  * 以前的 scrollHeight 实现漏掉居中版式的顶部溢出，这里用纯节点坐标锁定行为。
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import test from 'node:test'
 
-import { measureSceneOverflow, measureSceneTightPx, sceneReserveIn } from '../src/lib/pptxScene.ts'
+import {
+  fitCodeRowCards,
+  measureSceneOverflow,
+  measureSceneTightPx,
+  sceneReserveIn,
+} from '../src/lib/pptxScene.ts'
 import {
   SLIDE_CANVAS_PX_PER_IN,
   slideCanvasPxToPt,
   slideCanvasScale,
 } from '../src/lib/slideCanvas.ts'
-import type { SceneNode } from '../src/lib/pptxTypes.ts'
+import type { CardNode, RectNode, SceneNode } from '../src/lib/pptxTypes.ts'
+
+const frameSource = fs.readFileSync(new URL('../src/lib/pptxFrame.ts', import.meta.url), 'utf8')
 
 const W = 13.333
 const H = 7.5
+
+test('PPTX 导出：代码卡片不再依赖固定底部内边距', () => {
+  assert.doesNotMatch(frameSource, /\.ys-col[^\n]*padding-bottom/)
+})
+
+test('PPTX export balances code frame space inside every card', () => {
+  const cards: CardNode[] = [
+    { t: 'card', x: 1, y: 1, w: 4, h: 3 },
+    { t: 'card', x: 5, y: 1, w: 4, h: 3 },
+  ]
+  const frames: RectNode[][] = [
+    [{ t: 'rect', x: 1.2, y: 1.4, w: 3.6, h: 2.8 }],
+    [],
+  ]
+  fitCodeRowCards(cards, frames)
+  assert.deepEqual(cards.map((card) => card.h), [3.6, 3.6])
+  assert.deepEqual(cards.map((card) => [card.x, card.y, card.w]), [[1, 1, 4], [5, 1, 4]])
+  fitCodeRowCards(cards, [[], []])
+  assert.deepEqual(cards.map((card) => card.h), [3.6, 3.6])
+})
 
 function text(x: number, y: number, w: number, h: number): SceneNode {
   return {

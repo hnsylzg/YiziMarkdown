@@ -15,7 +15,7 @@
 import type { SlideKind } from './slides.ts'
 import type { PptxFrame } from './pptxFrame.ts'
 import type {
-  CodeLine, MathNode, PptxWarning, SceneNode, SceneOverflow, SceneParagraph, SceneRun, SceneRunStyle,
+  CardNode, CodeLine, MathNode, PptxWarning, RectNode, SceneNode, SceneOverflow, SceneParagraph, SceneRun, SceneRunStyle,
   SceneTableCell, SlideScene, TextNode,
 } from './pptxTypes.ts'
 import { splitInlineMath } from './inlineMath.ts'
@@ -47,6 +47,22 @@ interface Box { x: number; y: number; w: number; h: number }
 const EPS = 2
 const SLIDE_W_IN = 40 / 3
 const SLIDE_H_IN = 7.5
+
+/** 按代码框实际坐标调整同一排卡片，使代码框上下留白相等。 */
+export function fitCodeRowCards(cards: CardNode[], framesByCard: RectNode[][]): void {
+  if (!cards.length) return
+  const baseH = Math.max(...cards.map((card) => card.h))
+  const fittedH = cards.reduce((maxH, card, i) => {
+    const frames = framesByCard[i] || []
+    if (!frames.length) return maxH
+    const topGap = Math.min(...frames.map((frame) => frame.y - card.y))
+    const codeBottom = Math.max(...frames.map((frame) => frame.y + frame.h))
+    return Math.max(maxH, codeBottom - card.y + topGap)
+  }, baseH)
+  cards.forEach((card) => {
+    card.h = round3(fittedH)
+  })
+}
 
 /**
  * 用场景节点的真实包围盒计算四边溢出（px）。
@@ -338,6 +354,7 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
   const slide = frame.slide
   const warnings: PptxWarning[] = []
   const nodes: SceneNode[] = []
+  const codeFramesByCol = new Map<Element, RectNode[]>()
 
   const slideRect = rectOf(slide)
   // 演示与导出共用固定 1280×720 画布；按 96 px/in
@@ -769,15 +786,20 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
     // 末行（尤其收尾的 `}`）会露到色块外。演示里的色块本来就是含 padding 的。
     const fill = (parseColor(cs.backgroundColor)?.a || 0) > 0 ? flattenColor(cs.backgroundColor, slideBg) : undefined
     const linePt = num(cs.borderTopWidth) > 0 ? toPt(num(cs.borderTopWidth)) : undefined
-    if (fill || linePt) {
-      nodes.push({
-        t: 'rect',
-        x: toIn(r.x), y: toIn(r.y), w: toIn(r.w), h: toIn(r.h + extraPx),
-        fill,
-        lineColor: linePt ? flattenColor(cs.borderTopColor, slideBg) : undefined,
-        linePt,
-        radiusPt: toPt(borderRadiusPx(cs)),
-      })
+    const frame: RectNode = {
+      t: 'rect',
+      x: toIn(r.x), y: toIn(r.y), w: toIn(r.w), h: toIn(r.h + extraPx),
+      fill,
+      lineColor: linePt ? flattenColor(cs.borderTopColor, slideBg) : undefined,
+      linePt,
+      radiusPt: toPt(borderRadiusPx(cs)),
+    }
+    if (fill || linePt) nodes.push(frame)
+    const col = pre.closest('.ys-col')
+    if (col) {
+      const frames = codeFramesByCol.get(col) || []
+      frames.push(frame)
+      codeFramesByCol.set(col, frames)
     }
     nodes.push({
       t: 'code',
@@ -1029,6 +1051,8 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
 
     if (cls.contains('ys-cols')) {
       const cols = Array.from(el.children).filter((c) => c.classList.contains('ys-col'))
+      const rowCards: CardNode[] = []
+      const cardCols: Element[] = []
       // 卡片：先铺底再放内容
       const style = styleOf(el, win)
       const lineMode = !!slide.closest('.yizi-slideshow')?.classList.contains('ys-col-style-line') ||
@@ -1048,9 +1072,16 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
         })
       }
       cols.forEach((col) => {
+        const cardIndex = nodes.length
         emitCard(col)
+        const card = nodes[cardIndex]
+        if (card?.t === 'card') {
+          rowCards.push(card)
+          cardCols.push(col)
+        }
         Array.from(col.children).forEach((child) => emitBlock(child))
       })
+      fitCodeRowCards(rowCards, cardCols.map((col) => codeFramesByCol.get(col) || []))
       return
     }
 
