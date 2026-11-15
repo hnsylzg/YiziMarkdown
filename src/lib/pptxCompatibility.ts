@@ -1,18 +1,17 @@
 /**
  * pptxCompatibility.ts — PPTX 导出的兼容性边界。
  *
- * 演示端现在固定 1280×720 画布，正文设计字号为 23.04px（画布宽的 1.8%）。
- * 归一化到 13.333×7.5in 的幻灯片后，正文 = 23.04px * 72 / 96 = 17.28pt。
- *
- * 自动压缩允许把字号缩小，但不能低于 14pt 正文——再小就属于“影响观感”，
- * 此时页面应被标记为“超出兼容上限”，而不是继续无声压缩。
+ * custom 固定使用 1920×1080 设计画布，正文 30px 按 144 px/in 映射到
+ * PowerPoint 后为 15pt。作者 1280 基线的 14pt 下限在这里只允许缩小 6.7%，
+ * 无法处理长内容，因此 custom 使用 10pt 作为最低正文。
  */
+import { SLIDE_CANVAS_PX_PER_IN } from './slideCanvas.ts'
 
-export const PPTX_BODY_PX = 23.04
-export const PX_PER_IN = 96
+export const PPTX_BODY_PX = 30
+export const PX_PER_IN = SLIDE_CANVAS_PX_PER_IN
 export const PPTX_BODY_PT = PPTX_BODY_PX * 72 / PX_PER_IN
 /** 正文允许的最小字号（pt） */
-export const PPTX_MIN_BODY_PT = 14
+export const PPTX_MIN_BODY_PT = 10
 /** 压缩系数下限（防止极端设置导致无意义档位） */
 export const PPTX_MIN_SCALE_FLOOR = 0.4
 
