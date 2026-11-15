@@ -194,3 +194,8 @@ test('Pandoc 预处理：Mermaid 渲染为图片，失败时保留代码块', as
   const fallback = await prepareMarkdownForPandoc(MERMAID, async () => null)
   assert.equal(fallback.markdown, MERMAID)
 })
+
+test('DOCX 预处理：任务 checkbox 后的 NBSP 归一化为普通空格', async () => {
+  const src = `- [ ]\u00a0任务\n- [x]\u00a0完成\n`
+  assert.equal(await prepareMarkdownForDocx(src), '- [ ] 任务\n- [x] 完成\n')
+})
