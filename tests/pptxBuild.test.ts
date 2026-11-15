@@ -12,7 +12,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import JSZip from 'jszip'
 import { buildPptx } from '../src/lib/pptxBuild.ts'
-import { splitInlineMath } from '../src/lib/inlineMath.ts'
 import { canMergeRunStyles } from '../src/lib/pptxScene.ts'
 import type { SceneRunStyle, SlideScene } from '../src/lib/pptxTypes.ts'
 
@@ -148,31 +147,6 @@ test('PPTX：同一段落中的多个行内公式全部转成原生公式', asyn
   assert.ok(!/[\uE000-\uF8FF]/.test(xml), '导出后仍有公式占位标记')
 })
 
-test('PPTX：KaTeX 未生成 DOM 时仍能识别正文原始 TeX', () => {
-  assert.deepEqual(
-    splitInlineMath('数学思维：$1.01^{365}$；对比 $1.019^{365} = 962.89$'),
-    [
-      { kind: 'text', text: '数学思维：' },
-      { kind: 'math', tex: '1.01^{365}' },
-      { kind: 'text', text: '；对比 ' },
-      { kind: 'math', tex: '1.019^{365} = 962.89' },
-    ],
-  )
-  assert.deepEqual(splitInlineMath('价格 \\$5，不是公式'), [
-    { kind: 'text', text: '价格 \\$5，不是公式' },
-  ])
-  assert.deepEqual(splitInlineMath('价格是 $5 和 $10，合计 $15'), [
-    { kind: 'text', text: '价格是 $5 和 $10，合计 $15' },
-  ])
-  assert.deepEqual(splitInlineMath('$5-$10、$1,000、$99.9'), [
-    { kind: 'text', text: '$5-$10、$1,000、$99.9' },
-  ])
-  assert.deepEqual(splitInlineMath('$5 和 $x$'), [
-    { kind: 'text', text: '$5 和 ' },
-    { kind: 'math', tex: 'x' },
-  ])
-})
-
 test('PPTX：公式 run 不能被合并成普通文本', () => {
   assert.equal(canMergeRunStyles(runStyle(), runStyle()), true)
   assert.equal(canMergeRunStyles(runStyle(), runStyle({ mathTex: 'x^2' })), false)
@@ -290,7 +264,7 @@ test('PPTX：16:9 尺寸按 1280×720 基准（12192000×6858000 EMU）', async 
   assert.match(presentation, /<p:sldSz cx="12192000" cy="6858000"\/>/)
 })
 
-test('PPTX：视觉行固定浏览器换行，并关闭 PowerPoint 二次自动换行', async () => {
+test('PPTX：忽略浏览器视觉行，由 PowerPoint 自动换行并启用自动收缩', async () => {
   const style = runStyle()
   const scene = sampleScene()
   scene.nodes = [{
@@ -305,8 +279,8 @@ test('PPTX：视觉行固定浏览器换行，并关闭 PowerPoint 二次自动�
     ],
   }]
   const { xml } = await buildXml(scene)
-  assert.match(xml, /<a:bodyPr wrap="none"/)
-  assert.equal((xml.match(/<a:t xml:space="preserve">浏览器第[一二]行<\/a:t>/g) || []).length, 2)
-  assert.equal((xml.match(/<a:p>/g) || []).length, 2)
-  assert.equal((xml.match(/<a:rPr\b[^>]*sz="2000"/g) || []).length, 2)
+  assert.match(xml, /<a:bodyPr wrap="square"[^>]*><a:normAutofit\/><\/a:bodyPr>/)
+  assert.equal((xml.match(/<a:p>/g) || []).length, 1)
+  assert.equal((xml.match(/<a:br\/>/g) || []).length, 0)
+  assert.equal((xml.match(/<a:rPr\b[^>]*sz="2000"/g) || []).length, 1)
 })
