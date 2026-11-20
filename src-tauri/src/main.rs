@@ -1439,14 +1439,16 @@ fn hide_linux_titlebar(window: &tauri::WebviewWindow) {
     // 只在当前应用进程覆盖 GTK CSD 圆角，不修改用户的系统主题。
     // 隐藏标题栏后仍会保留 decoration 节点，所以必须直接改它的主题规则。
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(
-        r#"
+    if let Err(err) = provider.load_from_data(
+        br#"
         decoration,
         window.csd {
             border-radius: 0;
         }
         "#,
-    );
+    ) {
+        eprintln!("Failed to load Linux CSD CSS: {err}");
+    }
     if let Some(screen) = gtk::gdk::Screen::default() {
         gtk::StyleContext::add_provider_for_screen(
             &screen,
