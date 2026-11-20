@@ -1436,6 +1436,25 @@ fn linux_window_icon() -> Option<tauri::image::Image<'static>> {
 fn hide_linux_titlebar(window: &tauri::WebviewWindow) {
     use gtk::prelude::*;
 
+    // 只在当前应用进程覆盖 GTK CSD 圆角，不修改用户的系统主题。
+    // 隐藏标题栏后仍会保留 decoration 节点，所以必须直接改它的主题规则。
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(
+        r#"
+        decoration,
+        window.csd {
+            border-radius: 0;
+        }
+        "#,
+    );
+    if let Some(screen) = gtk::gdk::Screen::default() {
+        gtk::StyleContext::add_provider_for_screen(
+            &screen,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
     let Ok(gtk_window) = window.gtk_window() else {
         return;
     };
