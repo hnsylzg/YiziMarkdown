@@ -538,8 +538,8 @@ export function buildSlideScene(frame: PptxFrame, opts: SceneOptions): SlideScen
         return
       }
 
-      // 一个文本节点可能跨多行。逐字符读取它所属的视觉行，再在行边界切开；
-      // 这样 runs 的样式保持不变，但 PowerPoint 不需要重新猜浏览器在哪里换行。
+      // 一个文本节点可能跨多行。逐字符归入浏览器视觉行，供表格等需要固定
+      // 换行的场景使用；普通正文不改写视觉行，由 PowerPoint 自动换行。
       let buffer = ''
       let line = lineIndexAtRect(rects[0], lineSlots, lastVisualLine)
       for (let i = 0; i < raw.length;) {

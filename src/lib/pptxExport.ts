@@ -3,7 +3,7 @@
  *
  * 顺序：
  *   parseDeck（与演示同一份解析）
- *     → 隐藏 iframe（固定 1920×1080 设计画布，PptxFrame）
+ *     → 隐藏 iframe（固定 1280×720 逻辑画布，PptxFrame）
  *     → 逐页 setSlide + buildSlideScene（DOM → 场景图）
  *     → 收集 TeX 调 Rust latex_to_omml
  *     → buildPptx（pptxgenjs + JSZip 后处理）
@@ -163,13 +163,13 @@ function needsFit(scene: SlideScene): boolean {
 }
 
 /**
- * 让浏览器按缩小后的字号重新排版，直到内容装进 1920×1080 设计画布。
+ * 让浏览器按缩小后的字号重新排版，直到内容装进 1280×720 逻辑画布。
  *
  * `initial` 必须是**在当前页基础字号下**测出来的场景（调用方已先 setFontScale(1)），
  * 不能是上一页压缩后的残留状态。每次只从更小的档位继续向下试，避免先放大再缩小的
  * 非单调过程。
  *
- * 档位最低到 `minScale`（由 14pt 正文下限计算）；到下限仍放不下时返回最后一档，
+ * 档位最低到 `minScale`（由 10pt 正文下限计算）；到下限仍放不下时返回最后一档，
  * 由调用方标记为“超出兼容上限”。
  */
 async function shrinkToFit(
@@ -239,7 +239,7 @@ async function preparePptx(opts: PptxExportOptions): Promise<PptxMeasureResult> 
 
   const typography = opts.typography || {}
   const baseFontScale = typography.fontScale ?? DEFAULT_SLIDE_TYPOGRAPHY.fontScale
-  // 14pt 正文字号下限 → 最小压缩系数；低于它的页面属于“超出兼容上限”
+  // 10pt 正文字号下限 → 最小压缩系数；低于它的页面属于“超出兼容上限”
   const minScale = pptxMinFontScale(baseFontScale)
   const enabledPlugins = opts.enabledPlugins || []
   const pluginConfigs = opts.pluginConfigs || {}

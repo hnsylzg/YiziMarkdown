@@ -79,8 +79,8 @@ export interface TextNode {
   /**
    * 浏览器实际排出的视觉行（已按换行切成 runs）。
    *
-   * 有该字段时，生成层会写死这些换行并关闭 PowerPoint 的二次自动换行；
-   * 没有时退回 paragraphs，让 PowerPoint 自行排版（旧调用方 / 无法测量的场景）。
+   * 当前正文生成不读取该字段，而是使用 paragraphs 并交给 PowerPoint 自动换行。
+   * 保留它是为了兼容旧场景数据；不应再据此向 XML 写死浏览器换行。
    */
   visualLines?: SceneRun[][]
   /** 装饰性文本（大序号 / 引号 / agenda 数字）：不参与超页检测的编辑性修正 */
@@ -90,7 +90,7 @@ export interface TextNode {
    * 否则页脚本身贴近页底，会让每一页都被判定为“接近页底”。
    */
   footer?: boolean
-  /** 文本框不换行（代码块：用横向滚动语义，宁可溢出也不折行） */
+  /** 单行辅助文本不换行（当前用于页脚，避免页码或章节名被拆行） */
   noWrap?: boolean
 }
 

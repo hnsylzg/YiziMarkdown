@@ -398,6 +398,7 @@ export const useSettingsStore = create<SettingsState>()(
       // v16: 鼠标光标默认改为原生；旧存档的 bold 是旧默认，统一重置一次
       // v17: 通用设置新增界面字号 uiTextScale（默认 1.1）
       // v18: 界面字号从全局缩放改为字号/图标缩放，旧实验值 1.0 迁移到新默认 1.1
+      // v27: 默认主题从 liquidglass-prism 改为 minimal
       // v19: 用户显示值改为相对新基准（100% = 绝对 1.1）；旧实验值统一回默认 100%
       // v20: 粘贴图片保存位置 —— 新增 imageSaveMode（local 文档默认文档旁 images/）
       // v21: 取消「粘贴图片保存位置」设置 —— 本地文档统一写用户目录 assets/，
@@ -409,7 +410,7 @@ export const useSettingsStore = create<SettingsState>()(
       // v25: PPTX 导出范围持久化 —— 新增 pptxRangeMode / pptxRangeStart / pptxRangeEnd
       // v26: 合并 custom 导出偏好 —— Word 引擎 / Pandoc 模板 /
       //      pluginExportOptions，并迁移旧 exportOptionValues
-      version: 26,
+      version: 27,
       migrate: (persisted: unknown, persistedVersion: number) => {
         // 自动迁移旧字体栈到 MiSans 方案
         const oldFont = "'DengXian', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif"
@@ -480,6 +481,10 @@ export const useSettingsStore = create<SettingsState>()(
           )
           // v19：旧实验值使用绝对倍率，统一重置为新基准下的 100%（之后再按用户设置保存）
           if (fromVersion < 19) state.uiTextScale = UI_TEXT_SCALE_DEFAULT
+          // v27：默认主题改为 minimal；只迁移旧默认值，用户明确选择的其他主题不动。
+          if (fromVersion < 27 && state.currentTheme === 'liquidglass-prism') {
+            state.currentTheme = DEFAULT_THEME
+          }
           state.uiTextScale = clampNumber(state.uiTextScale, UI_TEXT_SCALE_MIN, UI_TEXT_SCALE_MAX, UI_TEXT_SCALE_DEFAULT)
           // v21：取消「粘贴图片保存位置」设置。本地文档统一写 ~/Documents/yizimarkdown/assets/，
           // 旧存档里的 imageSaveMode 已无消费点，直接删掉（留着只会被 persist 反复写回）。

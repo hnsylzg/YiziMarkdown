@@ -417,7 +417,7 @@
    Slideshow.tsx 内联写入。这里只解除 .ys-slide 基类的 inset:0，
    避免 left/top 与 right/bottom 过约束。
    ⚠️ will-change: auto 是 WebKit（macOS WKWebView）兼容修复：.ys-slide 基类
-   带 will-change: transform, opacity，克隆会继承 ⇒ 每格窗口里那份 1920×1080
+   带 will-change: transform, opacity，克隆会继承 ⇒ 每格窗口里那份 1280×720
    的克隆被提升为独立合成层，70 格 × 2 面 = 140 个超大合成层，WebKit 的
    tile 缓存被打爆后纹理降采样 ⇒ 内容模糊/错位/变形（Chromium 扛得住，
    WebKit 不能）。克隆本身不做动画，不需要层提升。 */

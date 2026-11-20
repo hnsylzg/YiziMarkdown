@@ -29,7 +29,7 @@ import {
 import { postRenderMermaid } from '../renderers/mermaid'
 import { readThemePalette } from '../lib/themePalette'
 import { loadThemeCatalog } from '../lib/themeCatalog'
-import { orderThemes } from '../lib/themeOrder'
+import { DEFAULT_THEME, orderThemes } from '../lib/themeOrder'
 import { CUSTOM_THEME, readUserCss } from '../lib/themeLoader'
 import { normalizeUserCss } from '../lib/userCss'
 import { scopeThemeVars } from '../lib/slideDeck'
@@ -176,7 +176,7 @@ export default function Reader({
   const setReaderSetting = useSettingsStore((s) => s.setField)
   const readerFullscreen = useWindowStateStore((s) => s.fullscreen)
   const readerMaximized = useWindowStateStore((s) => s.maximized)
-  const [theme, setTheme] = useState(settings.currentTheme || 'liquidglass-prism')
+  const [theme, setTheme] = useState(settings.currentTheme || DEFAULT_THEME)
   const [dark, setDark] = useState(!!settings.isDark)
   const [fontChoice, setFontChoice] = useState<FontChoice>('theme')
   const [fontSize, setFontSize] = useState(Math.max(18, Number(settings.previewFontSize) || 20))
@@ -251,7 +251,7 @@ export default function Reader({
   useEffect(() => {
     let cancelled = false
     const isCustom = theme === CUSTOM_THEME
-    const base = isCustom ? (settings.customCssBase || 'liquidglass-prism') : theme
+    const base = isCustom ? (settings.customCssBase || DEFAULT_THEME) : theme
     invokeTauri<string>('read_theme_css', { name: `${base}.css` })
       .then(async (css) => {
         if (cancelled) return

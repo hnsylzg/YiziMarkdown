@@ -3,6 +3,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DEFAULT_THEME, orderThemes } from '../src/lib/themeOrder.ts'
 
+test('DEFAULT_THEME is minimal', () => {
+  assert.equal(DEFAULT_THEME, 'minimal')
+})
+
 test('orderThemes: 默认主题挪到首位，其余保持原序', () => {
   const files = ['academic.css', `${DEFAULT_THEME}.css`, 'lychee.css', 'violet.css']
   assert.deepEqual(orderThemes(files), [`${DEFAULT_THEME}.css`, 'academic.css', 'lychee.css', 'violet.css'])
