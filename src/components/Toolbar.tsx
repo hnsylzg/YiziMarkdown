@@ -246,13 +246,11 @@ export default function Toolbar({
     try { await windowOps.toggleMaximize() } catch {}
   }, [])
 
-  // 平台（Linux 使用系统窗口装饰，不再把工具栏当标题栏）
-  const [platform, setPlatform] = useState<string | null>(null)
+  // 平台（顶栏右键菜单按平台裁剪：mac 无「最大化」心智）
+  const [isMac, setIsMac] = useState(false)
   useEffect(() => {
-    windowOps.getPlatform().then(setPlatform).catch(() => setPlatform('unknown'))
+    windowOps.getPlatform().then((p) => setIsMac(p === 'macos')).catch(() => {})
   }, [])
-  const isMac = platform === 'macos'
-  const isLinux = platform === 'linux'
 
   // 窗口宽度检测：widthCollapsed（收折策略）与 viewportNarrow（品牌缩名）都只随 resize 变化 ——
   // 手动收折的持久化状态不参与，放大 / 最大化 / 全屏都不会把「用户主动收起」顶开
@@ -270,7 +268,6 @@ export default function Toolbar({
     <div
       className="toolbar"
       onMouseDown={(e) => {
-        if (isLinux) return
         if (e.button !== 0) return
         // 全屏中禁止标题栏拖动：全屏窗口被 startDragging 拖走后带着 1920×1080
         // 尺寸漂移出屏（实测 A2），退出全屏才恢复——用户视为「窗口坏掉」
@@ -298,7 +295,6 @@ export default function Toolbar({
         window.addEventListener('mouseup', onUp)
       }}
       onDoubleClick={(e) => {
-        if (isLinux) return
         if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('.relative')) return
         // 全屏中双击 = 无操作（toggleMaximize 会触发原生最大化，留下 40px 底部缝，实测 A4）
         if (useWindowStateStore.getState().fullscreen) return
@@ -306,7 +302,6 @@ export default function Toolbar({
       }}
       onContextMenu={(e) => {
         e.preventDefault()
-        if (isLinux) return
         // 打开前查一次窗口状态，决定「最大化/还原」与「全屏」标签；mac 无「最大化」项；
         // 全屏中不提供「最大化」项（同名操作会打破全屏几何，实测 A4）
         void Promise.all([windowOps.isMaximized(), windowOps.isFullscreen()]).then(([maxed, fs]) => {

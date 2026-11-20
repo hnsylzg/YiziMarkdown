@@ -13,14 +13,11 @@ export default function WindowControls({ }: WindowControlsProps) {
   // 窗口状态单一数据源（windowStateStore 内部已接 fullscreenchange + 轮询兜底）
   const isMaximized = useWindowStateStore((s) => s.maximized)
   const isFullscreen = useWindowStateStore((s) => s.fullscreen)
-  const [platform, setPlatform] = useState<string | null>(null)
+  const [isMac, setIsMac] = useState(false)
 
   useEffect(() => {
-    windowOps.getPlatform().then(setPlatform).catch(() => setPlatform('unknown'))
+    windowOps.getPlatform().then((p) => setIsMac(p === 'macos')).catch(() => {})
   }, [])
-
-  const isMac = platform === 'macos'
-  const isLinux = platform === 'linux'
 
   const handleMinimize = async () => {
     try { await windowOps.minimize() } catch {}
@@ -39,24 +36,18 @@ export default function WindowControls({ }: WindowControlsProps) {
     try { await windowOps.close() } catch {}
   }
 
-  // Export drag handler for parent to use on toolbar. Linux uses native decorations.
+  // Export drag handler for parent to use on toolbar.
   useEffect(() => {
-    if (!platform || isLinux) {
-      delete (window as any).__TAURI_START_DRAG
-      return
-    }
     (window as any).__TAURI_START_DRAG = async () => {
       try { await windowOps.startDragging() } catch {}
     }
     return () => { delete (window as any).__TAURI_START_DRAG }
-  }, [platform, isLinux])
+  }, [])
 
   // 通用按钮样式：w-9（用户实测反馈再收紧一档；四钮共 144px）。
   // focus-visible:outline-none —— 窗口按钮点击后由键盘（Esc 等）触发的
   // :focus-visible 会在按钮上残留焦点框（实测 A12），窗口按钮无需焦点可见性。
   const btn = 'w-9 h-11 flex items-center justify-center hover:bg-[var(--editor-hover)] text-[var(--editor-text)] transition-colors focus-visible:outline-none'
-
-  if (!platform || isLinux) return null
 
   return (
     <div className="flex items-center h-full">

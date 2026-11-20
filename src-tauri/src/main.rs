@@ -1427,6 +1427,24 @@ fn linux_window_icon() -> Option<tauri::image::Image<'static>> {
     Some(tauri::image::Image::new_owned(rgba.into_raw(), tw, th))
 }
 
+/// Linux 使用 GTK CSD 保留系统主题边框和合成器阴影，但隐藏原生标题栏。
+///
+/// `decorations: true` 会让 Wayland/X11 绘制标题栏；直接改回 false 又会连同
+/// 边框、圆角和阴影一起丢失。给窗口挂一个零高度自定义标题栏，可以让 GTK
+/// 继续走 CSD 窗口装饰，同时把标题栏区域收起，应用自己的工具栏仍作为标题栏使用。
+#[cfg(target_os = "linux")]
+fn hide_linux_titlebar(window: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+    let titlebar = gtk::EventBox::new();
+    titlebar.set_size_request(-1, 0);
+    titlebar.set_visible(true);
+    gtk_window.set_titlebar(Some(&titlebar));
+}
+
 /// 在新窗口中用 YiziMarkdown 自身打开指定文件
 #[tauri::command]
 fn open_in_app(file_path: String) -> Result<(), String> {
@@ -2762,6 +2780,7 @@ fn main() {
             if let Some(icon) = linux_window_icon() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_icon(icon);
+                    hide_linux_titlebar(&window);
                 }
             }
 

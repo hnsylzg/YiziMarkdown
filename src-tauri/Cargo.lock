@@ -6511,6 +6511,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "glib",
+ "gtk",
  "image",
  "keyring",
  "once_cell",
