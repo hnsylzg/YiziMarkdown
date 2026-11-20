@@ -1430,8 +1430,8 @@ fn linux_window_icon() -> Option<tauri::image::Image<'static>> {
 /// Linux 使用 GTK CSD 保留系统主题边框和合成器阴影，但隐藏原生标题栏。
 ///
 /// `decorations: true` 会让 Wayland/X11 绘制标题栏；直接改回 false 又会连同
-/// 边框、圆角和阴影一起丢失。给窗口挂一个零高度自定义标题栏，可以让 GTK
-/// 继续走 CSD 窗口装饰，同时把标题栏区域收起，应用自己的工具栏仍作为标题栏使用。
+/// 边框、圆角和阴影一起丢失。给窗口挂一个隐藏的自定义标题栏，可以让 GTK
+/// 继续走 CSD 窗口装饰，同时不分配可见标题栏区域，应用自己的工具栏仍作为标题栏使用。
 #[cfg(target_os = "linux")]
 fn hide_linux_titlebar(window: &tauri::WebviewWindow) {
     use gtk::prelude::*;
@@ -1440,8 +1440,7 @@ fn hide_linux_titlebar(window: &tauri::WebviewWindow) {
         return;
     };
     let titlebar = gtk::EventBox::new();
-    titlebar.set_size_request(-1, 0);
-    titlebar.set_visible(true);
+    titlebar.set_visible(false);
     gtk_window.set_titlebar(Some(&titlebar));
 }
 
